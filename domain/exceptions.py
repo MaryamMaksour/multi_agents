@@ -38,3 +38,7 @@ class CacheError(DomainError):
 class HistoryError(DomainError):
     """Raised when a history operation fails."""
     pass
+
+class SessionBusyError(DomainError):
+    """Raised when a session's lock could not be acquired."""
+    pass
