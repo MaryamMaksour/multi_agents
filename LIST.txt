@@ -1,0 +1,13 @@
+1- create env
+2- create requirments
+
+3- create domain/entities
+    all the input and output of the function 
+
+4- PORTs --> like abstract  class
+    llm_port.py	 ==> LLMPort: توقيع وحي	الـ interactor بدو "يحكي مع LLM" بلا ما يعرف Qwen ولا OpenAI ولا شو تحتها
+    embedding_port.py	EmbeddingPort: embed(text: str) -> list[float]	مطلوب لـ semantic search والـ memory، بمعزل عن مين مزوّد الـ embeddings
+    tool_port.py	Tool: name: str + ainvoke(args: dict) -> Any	الأهم هون: عقد موحّد بين sql_tools (sub-agent) و delegate_tools (orchestrator). الـ interactor بيستدعي أي أداة بنفس الطريقة، بلا ما يفرق إذا هيي بتشغل SQL أو بتعمل HTTP call
+    database_port.py	DatabasePort: fetch(query, params), execute(...), acquire() (context manager)	فصل الـ interactor عن asyncpg تحديداً — بكرا لو بدلتي المكتبة أو الداتابيس، ما بتلمسي منطق الأعمال
+    cache_port.py	CachePort: get/set/delete، وlock(key) (context manager)	نفس المبدأ لـ Redis — خصوصاً الـ lock لأنو الـ interactor محتاجو لمنع تعارض جلسات متوازية، بس مش لازم يعرف هيدا Redis
+    history_port.py	HistoryPort: log_user_message, log_assistant_final, log_tool_call, log_sql_query, get_memory, ensure_schema	هاد الـ "Repository" من استراتيجية المقالة يلي جبتيها — تخزين تاريخ المحادثة + استرجاع أمثلة سيمانتك، بمعزل عن كيف مخزّن (Postgres اليوم)
