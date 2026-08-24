@@ -11,3 +11,13 @@
     database_port.py	DatabasePort: fetch(query, params), execute(...), acquire() (context manager)	فصل الـ interactor عن asyncpg تحديداً — بكرا لو بدلتي المكتبة أو الداتابيس، ما بتلمسي منطق الأعمال
     cache_port.py	CachePort: get/set/delete، وlock(key) (context manager)	نفس المبدأ لـ Redis — خصوصاً الـ lock لأنو الـ interactor محتاجو لمنع تعارض جلسات متوازية، بس مش لازم يعرف هيدا Redis
     history_port.py	HistoryPort: log_user_message, log_assistant_final, log_tool_call, log_sql_query, get_memory, ensure_schema	هاد الـ "Repository" من استراتيجية المقالة يلي جبتيها — تخزين تاريخ المحادثة + استرجاع أمثلة سيمانتك، بمعزل عن كيف مخزّن (Postgres اليوم)
+
+5- exceptions.py inside domain: 
+DomainError (base مشترك للكل)
+LLMRequestError
+EmbeddingError
+UnknownToolError
+ToolExecutionError
+DatabaseError
+CacheError
+HistoryError
