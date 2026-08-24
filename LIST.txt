@@ -21,3 +21,9 @@ ToolExecutionError
 DatabaseError
 CacheError
 HistoryError
+
+
+6- Interactor
+    run_agent_turn --> اللوجيك تبع نداء 
+                        llm 
+                        بكل مرة منبعت ونشيك اذا في اداة منفذها 
