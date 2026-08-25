@@ -27,3 +27,6 @@ HistoryError
     run_agent_turn --> اللوجيك تبع نداء 
                         llm 
                         بكل مرة منبعت ونشيك اذا في اداة منفذها 
+
+
+7- Build the Adapter (based on Ports)

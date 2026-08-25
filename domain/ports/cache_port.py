@@ -26,14 +26,6 @@ class CachePort(Protocol):
         """
         ...
 
-    async def lock(self, key: str) -> None:
-        """Acquire a lock for a specific key in the cache.
-
-        Raises:
-            CacheError: if the cache call fails.
-        """
-        ...
-
     async def acquire_lock(self, key: str, timeout: int) -> bool:
         """Try to acquire a lock. Returns True if acquired, False if already held.
 
