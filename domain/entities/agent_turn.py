@@ -13,6 +13,7 @@ from .chat_message import ChatMessage, ToolCall
 class PaginationState:
     has_more: bool
     next_cursor: Optional[str] = None
+    pages_fetched: int = 0
 
 
 @dataclass

@@ -19,6 +19,7 @@ from sqlparse.sql import IdentifierList
 MAX_OFFSET = 5000
 
 _COLUMN_LINE_RE = re.compile(r'^"?([A-Za-z_][A-Za-z0-9_]*)"?\s+\S')
+    
 
 
 def _validate_identifier(name: str) -> str:
@@ -72,6 +73,24 @@ def validate_readonly_query(query: str, allowed_tables: list[str]) -> str | None
     return None
 
 
+def _extract_column_names(table_schema: dict) -> set:
+    columns_field = table_schema.get("columns")
+    if isinstance(columns_field, (set, frozenset)):
+        text = next(iter(columns_field), "")
+    elif isinstance(columns_field, str):
+        text = columns_field
+    else:
+        text = str(columns_field or "")
+
+    names = set()
+    for line in text.splitlines():
+        line = line.strip().rstrip(",")
+        if not line:
+            continue
+        m = _COLUMN_LINE_RE.match(line)
+        if m:
+            names.add(m.group(1).lower())
+    return names
 
 class SqlToolAdapter():
 
@@ -152,15 +171,28 @@ class SqlToolAdapter():
             return filters
 
 
-    async def _get_lsit_values(self, table: str, column: str) -> Any: 
+    async def _get_lsit_values(self, table: str, column: str) -> Any:
+        table_id = _validate_identifier((table or "").lower())
+        if table_id not in self._allowed_tables:
+            return {"error": f"Unknown table: {table}. use one of the tables in the schema only {sorted(self._allowed_tables)}"}
 
-        table_key = table.lower()
-         
-        if table_key not in self._allowed_tables:
-            return "Not allowed to use this table, or error with table name"
+        column_id = _validate_identifier((column or "").lower())
+        real_columns = _extract_column_names(self._schema.get(table_id, {}))
+        if column_id not in real_columns:
+            return {"error": f"Unknown column: {column}. use one of the columns in table {table_id} schema only"}
 
-        return self._lsit_values[table_key].get(column, "column not found")
-        
+        sql = f"SELECT DISTINCT {column_id} FROM {table_id}"
+        rows = await self._db.fetch(sql)
+
+        if not rows:
+            return f"all values in column {column_id} is Null"
+
+        values = [r[column_id] for r in rows]
+        if len(values) > 20:
+            return f"we have multy value {len(values)}, here are some of them {values[:10]}"
+
+        return f"in column {column_id} in table {table_id} we have this list {values}"
+            
 
     async def _db_execute(self, query: str, params: list, offset: int,
                        count_query: str, count_params: list,
