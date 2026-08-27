@@ -1,0 +1,269 @@
+from domain.ports.database_port import DatabasePort
+from domain.ports.embedding_port import EmbeddingPort
+from domain.ports.cache_port import CachePort
+
+
+from domain.exceptions import UnknownToolError, ToolExecutionError
+
+
+from typing import Any
+import base64
+import json
+import re
+import uuid
+import zlib
+
+import sqlparse
+from sqlparse.sql import IdentifierList
+
+MAX_OFFSET = 5000
+
+_COLUMN_LINE_RE = re.compile(r'^"?([A-Za-z_][A-Za-z0-9_]*)"?\s+\S')
+
+
+def _validate_identifier(name: str) -> str:
+    if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name or ""):
+        raise ValueError(f"Invalid identifier: {name!r}")
+    return name
+
+
+def _encode_cursor(payload: dict) -> str:
+    s = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    c = zlib.compress(s, level=9)
+    return base64.urlsafe_b64encode(c).rstrip(b"=").decode("ascii")
+
+
+def _decode_cursor(cursor: str, max_bytes: int = 65536) -> dict:
+    pad = "=" * (-len(cursor) % 4)
+    raw = base64.urlsafe_b64decode(cursor + pad)
+    decompressor = zlib.decompressobj()
+    s = decompressor.decompress(raw, max_bytes)
+    if decompressor.unconsumed_tail:
+        raise ValueError("Cursor payload too large.")
+    return json.loads(s.decode("utf-8"))
+
+def validate_readonly_query(query: str, allowed_tables: list[str]) -> str | None:
+    """Returns None if the query is valid, or an error message string if not."""
+    statements = sqlparse.parse(query)
+    if len(statements) != 1:
+        return "Multiple statements are not allowed."
+
+    statement = statements[0]
+    if statement.get_type() != "SELECT":
+        return "Only SELECT queries are allowed."
+
+    for i, token in enumerate(statement.tokens):
+        if token.is_keyword and token.value.upper() in ('FROM', 'JOIN'):
+            next_token = statement.token_next(i)[1]
+            if next_token is None:
+                continue
+
+            # Like: FROM table_a, table_b 
+            if isinstance(next_token, IdentifierList):
+                candidates = list(next_token.get_identifiers())
+            else:
+                candidates = [next_token]
+
+            for candidate in candidates:
+                table_name = candidate.get_real_name() if hasattr(candidate, 'get_real_name') else candidate.value
+                if table_name and table_name.lower() not in allowed_tables:
+                    return f"Table not allowed: {table_name}"
+
+    return None
+
+
+
+class SqlToolAdapter():
+
+    def __init__(self, db: DatabasePort, embeddings: EmbeddingPort, cache: CachePort,
+                        allowed_tables: list[str], schema: dict, filters: dict, 
+                        lsit_values: dict, dist_op: str, vector_ttl_seconds: int  ):
+
+        self._db = db
+        self._embeddings = embeddings
+        self._cache = cache
+        self._allowed_tables = {table.lower() for table in allowed_tables}
+        self._schema = schema
+        self._filters = filters
+        self._lsit_values = lsit_values
+        self._dist_op = dist_op 
+        self._vector_ttl_seconds = vector_ttl_seconds
+
+        # dispatcher: match the tool name with the method name
+        self._handlers = {
+            "get_table_schema": self._get_table_schema,
+            "get_filter": self._get_filter,
+            "get_lsit_values": self._get_lsit_values,
+            "db_execute": self._db_execute,
+            "get_table_records": self._get_table_records,
+            "embed_query_tool": self._embed_query_tool,
+            "execute_next_cursor": self._execute_next_cursor,
+        }
+
+
+
+
+    async def call_tool(self, tool_name: str, args: dict) -> Any:
+        """Invoke the named tool with the given arguments and return its result.
+
+        Raises:
+            UnknownToolError: if tool_name is not a recognized tool.
+            ToolExecutionError: if the tool itself fails while executing.
+        """
+
+        handler = self._handlers.get(tool_name)
+
+        if handler is None:
+            raise UnknownToolError(f"Unknown tool: {tool_name}")
+
+        try:
+            return await handler(**args)
+        except Exception as e:
+            raise ToolExecutionError(f"Error {e} while executing tool: {tool_name}") from e
+
+
+    async def _get_table_schema(self, tables: list[str]) -> Any:
+            
+            schemas = {}
+     
+            for table in tables:
+                table_key = table.lower()
+                if table_key not in self._allowed_tables:
+                    schemas[table_key] = "Not allowed to use this table, or error with table name"
+                else:
+                    schemas[table_key] = self._schema[table_key]
+
+            return schemas
+
+
+    async def _get_filter(self, columns: list[str], table_name: str) -> Any:
+
+            table_key = table_name.lower()
+
+            if table_key not in self._allowed_tables:
+                 return "Not allowed to use this table, or error with table name"
+            
+            filters = {}
+   
+            for col in columns:
+                filters[col] = self._filters[table_key].get(col, "column not found")
+ 
+
+            return filters
+
+
+    async def _get_lsit_values(self, table: str, column: str) -> Any: 
+
+        table_key = table.lower()
+         
+        if table_key not in self._allowed_tables:
+            return "Not allowed to use this table, or error with table name"
+
+        return self._lsit_values[table_key].get(column, "column not found")
+        
+
+    async def _db_execute(self, query: str, params: list, offset: int,
+                       count_query: str, count_params: list,
+                       cursor: str = "") -> Any:
+        if cursor:
+            state = _decode_cursor(cursor)
+            offset = state["offset"]
+            query = state["query"]
+            params = list(state.get("resolved_params", params))
+            if params:
+                params[-1] = offset
+            count_query = state.get("count_query", count_query)
+            count_params = state.get("count_params", count_params)
+        else:
+            offset = 0
+
+        query_err = validate_readonly_query(query, self._allowed_tables)
+        if query_err:
+            return {"error": query_err}
+        count_query_err = validate_readonly_query(count_query, self._allowed_tables)
+        if count_query_err:
+            return {"error": count_query_err}
+
+        query_check = query.lower()
+        if "limit $" not in query_check:
+            return {"error": "limit $n should be in the query, params = [..., limit, offset]"}
+        if "offset $" not in query_check:
+            return {"error": "offset $n should be in the query, params = [..., limit, offset]"}
+
+        if len(params) >= 2:
+            if int(params[-2]) > 100:
+                return {"error": "limit should be less than 100"}
+            if int(params[-1]) > MAX_OFFSET:
+                return {"error": f"offset should be less than {MAX_OFFSET}"}
+        else:
+            return {"error": "params must include limit and offset as the last two values"}
+
+        resolved_params = []
+        for p in params:
+            if isinstance(p, str) and p.startswith("vec_"):
+                p = await self._cache.get(p)
+            resolved_params.append(p)
+
+        resolved_count_params = []
+        for p in count_params:
+            if isinstance(p, str) and p.startswith("vec_"):
+                p = await self._cache.get(p)
+            resolved_count_params.append(p)
+
+        data = await self._db.fetch(query, *resolved_params)
+        row_count = len(data)
+
+        total_rows = await self._db.fetch(count_query, *resolved_count_params)
+        total = total_rows[0][list(total_rows[0].keys())[0]] if total_rows else 0
+
+        next_offset = offset + row_count
+        has_more = next_offset < total
+        next_cursor = ""
+        if has_more:
+            next_cursor = _encode_cursor({
+                "offset": next_offset,
+                "resolved_params": resolved_params,
+                "query": query,
+                "count_query": count_query,
+                "count_params": resolved_count_params,
+            })
+
+        return {"rows": data, "row_count": total, "has_more": has_more, "next_cursor": next_cursor}
+
+
+    async def _get_table_records(self, query: str, table_name: str, mx: int = 5) -> Any:
+        table_key = table_name.lower()
+        if table_key not in self._allowed_tables:
+            return {"error": f"Unknown table: {table_name}. use one of {sorted(self._allowed_tables)}"}
+
+        mx = max(3, min(int(mx), 6))
+        vec = await self._embeddings.embed(query)
+
+        sql = f"""
+            SELECT row_txt
+            FROM {_validate_identifier(table_key)}
+            ORDER BY embedding {self._dist_op} $1::vector
+            LIMIT $2
+        """
+        rows = await self._db.fetch(sql, vec, mx)
+        items = [r["row_txt"] for r in rows]
+        return {"rows": items, "row_count": len(items), "has_more": False, "next_cursor": ""}
+
+
+    async def _embed_query_tool(self, query: str) -> Any:
+        embed = await self._embeddings.embed(query)
+        token = f"vec_{uuid.uuid4().hex[:12]}"
+        await self._cache.set(token, embed, ttl=self._vector_ttl_seconds)
+        return {"vector_token": token}
+
+
+    async def _execute_next_cursor(self, cursor: str) -> Any:
+        return await self._db_execute(
+            query="", params=[], offset=0,
+            count_query="", count_params=[], cursor=cursor,
+        )
+
+
+                    
+
+        
