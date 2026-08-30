@@ -4,6 +4,7 @@ from domain.ports.cache_port import CachePort
 
 
 from domain.exceptions import UnknownToolError, ToolExecutionError
+from libs.agent_core.sql_validation import validate_identifier, validate_readonly_query
 
 
 from typing import Any
@@ -13,19 +14,11 @@ import re
 import uuid
 import zlib
 
-import sqlparse
-from sqlparse.sql import IdentifierList
 
 MAX_OFFSET = 5000
 
 _COLUMN_LINE_RE = re.compile(r'^"?([A-Za-z_][A-Za-z0-9_]*)"?\s+\S')
     
-
-
-def _validate_identifier(name: str) -> str:
-    if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name or ""):
-        raise ValueError(f"Invalid identifier: {name!r}")
-    return name
 
 
 def _encode_cursor(payload: dict) -> str:
@@ -42,36 +35,6 @@ def _decode_cursor(cursor: str, max_bytes: int = 65536) -> dict:
     if decompressor.unconsumed_tail:
         raise ValueError("Cursor payload too large.")
     return json.loads(s.decode("utf-8"))
-
-def validate_readonly_query(query: str, allowed_tables: list[str]) -> str | None:
-    """Returns None if the query is valid, or an error message string if not."""
-    statements = sqlparse.parse(query)
-    if len(statements) != 1:
-        return "Multiple statements are not allowed."
-
-    statement = statements[0]
-    if statement.get_type() != "SELECT":
-        return "Only SELECT queries are allowed."
-
-    for i, token in enumerate(statement.tokens):
-        if token.is_keyword and token.value.upper() in ('FROM', 'JOIN'):
-            next_token = statement.token_next(i)[1]
-            if next_token is None:
-                continue
-
-            # Like: FROM table_a, table_b 
-            if isinstance(next_token, IdentifierList):
-                candidates = list(next_token.get_identifiers())
-            else:
-                candidates = [next_token]
-
-            for candidate in candidates:
-                table_name = candidate.get_real_name() if hasattr(candidate, 'get_real_name') else candidate.value
-                if table_name and table_name.lower() not in allowed_tables:
-                    return f"Table not allowed: {table_name}"
-
-    return None
-
 
 def _extract_column_names(table_schema: dict) -> set:
     columns_field = table_schema.get("columns")
@@ -388,11 +351,11 @@ class SqlToolAdapter():
 
 
     async def _get_lsit_values(self, table: str, column: str) -> Any:
-        table_id = _validate_identifier((table or "").lower())
+        table_id = validate_identifier((table or "").lower())
         if table_id not in self._allowed_tables:
             return {"error": f"Unknown table: {table}. use one of the tables in the schema only {sorted(self._allowed_tables)}"}
 
-        column_id = _validate_identifier((column or "").lower())
+        column_id = validate_identifier((column or "").lower())
         real_columns = _extract_column_names(self._schema.get(table_id, {}))
         if column_id not in real_columns:
             return {"error": f"Unknown column: {column}. use one of the columns in table {table_id} schema only"}
@@ -489,7 +452,7 @@ class SqlToolAdapter():
 
         sql = f"""
             SELECT row_txt
-            FROM {_validate_identifier(table_key)}
+            FROM {validate_identifier(table_key)}
             ORDER BY embedding {self._dist_op} $1::vector
             LIMIT $2
         """

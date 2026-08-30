@@ -1,0 +1,39 @@
+# Runtime dependencies, derived from what the code actually imports.
+#
+# Was previously a single line, `enum==0.4.7`. That package is a Python 2
+# backport of what has been in the standard library since Python 3.4, and
+# installing it shadows the real `enum` module - so it did not just fail to
+# help, it would have broken `from enum import Enum` across the codebase.
+# `enum`, `dataclasses`, `typing`, `json`, `re`, `uuid`, `zlib`, `base64`,
+# `asyncio` and `operator` are all stdlib and need no entry here.
+#
+# Versions are floors, not pins. Pin them properly (pip freeze, or a lock
+# file) once there is a working environment to pin against - guessing exact
+# versions now would only encode whatever happens to be current today.
+
+# LLM and embeddings, over any OpenAI-compatible endpoint. The same client
+# talks to a hosted API or to a local vLLM/Ollama server; only base_url moves.
+openai>=1.40
+
+# Agent loop. Confined to one adapter, which is why these two appear here and
+# nowhere near the domain.
+langgraph>=0.2
+langchain-core>=0.3
+
+# Postgres + pgvector
+asyncpg>=0.29
+
+# Cache, vector tokens, distributed session locks
+redis>=5.0
+
+# Sub-agent delegation over HTTP
+httpx>=0.27
+
+# Read-only query validation: SELECT-only, no stacked statements, allowlisted
+# tables. Parsing rather than pattern-matching is the point.
+sqlparse>=0.5
+
+# Inbound HTTP
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7
