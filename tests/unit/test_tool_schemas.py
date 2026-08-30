@@ -94,13 +94,37 @@ def test_tool_names_are_unique(schemas):
 # --------------------------------------------------------------------------
 
 
-def test_sql_schema_names_match_the_dispatch_table_exactly():
+# Dispatchable, deliberately not declared. get_table_records selects `row_txt`
+# ordered by an `embedding` column, and neither exists in any schema this
+# design produces - so declaring it told the model about a tool that fails on
+# every call. The handler stays until whole-row search is rebuilt or dropped;
+# see docs/deferred.md.
+WITHHELD_FROM_THE_MODEL = {"get_table_records"}
+
+
+def test_every_declared_sql_tool_is_dispatchable():
+    """The direction that fails at runtime: a name the model is told about
+    and the dispatcher does not know raises UnknownToolError mid-answer."""
     adapter = sql_adapter()
     declared = {s["function"]["name"] for s in adapter.get_tool_schemas()}
-    assert declared == set(adapter._handlers), (
-        "a name declared but not dispatched raises UnknownToolError mid-turn; "
-        "a name dispatched but not declared is a tool the model never learns about"
-    )
+    assert declared <= set(adapter._handlers)
+
+
+def test_nothing_is_withheld_from_the_model_by_accident():
+    """The other direction is not an error - a handler may be withheld on
+    purpose - but it must be on purpose. An unlisted one here is a tool
+    nobody decided to hide."""
+    adapter = sql_adapter()
+    declared = {s["function"]["name"] for s in adapter.get_tool_schemas()}
+    assert set(adapter._handlers) - declared == WITHHELD_FROM_THE_MODEL
+
+
+def test_a_withheld_tool_is_still_reachable_if_something_calls_it():
+    """Withheld from the model, not deleted. Removing the handler as well is
+    the larger decision this is deferring."""
+    adapter = sql_adapter()
+    for name in WITHHELD_FROM_THE_MODEL:
+        assert name in adapter._handlers
 
 
 def test_sql_declared_properties_are_accepted_by_their_handlers():

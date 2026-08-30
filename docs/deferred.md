@@ -161,17 +161,17 @@ schema this design produces - embeddings live in `embed_<column>` columns
 beside the column they describe. It is a survivor from the old codebase, where
 each table had one denormalised text column and one vector for the whole row.
 
-It is declared in `get_tool_schemas`, so the model is told it exists and will
-eventually call it, and every call will fail.
+**Half done.** It is no longer declared in `get_tool_schemas`, so the model is
+no longer told about a tool that fails on every call. The handler stays in
+`_handlers`, and `tests/unit/test_tool_schemas.py` now asserts that gap is
+exactly this one tool - withheld on purpose rather than lost.
 
-**Comes back when** the whole-row search idea is either rebuilt against the
+**What is left:** whether whole-row search is rebuilt against the
 `embed_<column>` convention or dropped. Dropping is the smaller change and
-probably right: `db_execute` already combines a vector distance with ordinary
-predicates in one WHERE clause, which is strictly more useful.
-
-**Not deferred with it:** while it is declared, it is a tool the model can
-waste a turn on. Removing it from `get_tool_schemas` is safe on its own and
-does not need the larger decision.
+probably right - `db_execute` already combines a vector distance with ordinary
+predicates in one WHERE clause, which is strictly more useful. Rebuilding is
+only worth it if "show me what rows look like" turns out to be something the
+model actually needs and cannot get from `get_lsit_values` plus a LIMIT.
 
 ---
 

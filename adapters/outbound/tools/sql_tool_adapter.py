@@ -97,6 +97,15 @@ class SqlToolAdapter():
         returning {"error": ...}. Stating them here turns a wasted round trip
         into a query the model gets right the first time - the error path stays
         as the guarantee, this is just the shorter route to it.
+
+        Not everything dispatchable is declared. `get_table_records` is still
+        in _handlers and is deliberately absent from this list: it selects
+        `row_txt` ordered by an `embedding` column, and neither exists in any
+        schema this design produces - embeddings live in `embed_<column>`
+        columns beside the column they describe. Declaring it told the model
+        about a tool that fails on every call. The handler is left in place
+        because whether whole-row search is rebuilt or dropped is a decision
+        of its own; see docs/deferred.md.
         """
         return [
             {
@@ -271,30 +280,6 @@ class SqlToolAdapter():
                             },
                         },
                         "required": ["cursor"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "get_table_records",
-                    "description": (
-                        "Return a few whole rows from one table that read as closest in "
-                        "meaning to a phrase, as text. Use it to see what a table's rows "
-                        "actually look like before writing a query against it. It is not "
-                        "a substitute for db_execute: it cannot filter, count, or page."
-                    ),
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "query": {"type": "string", "description": "The phrase to match rows against."},
-                            "table_name": {"type": "string", "description": "Table to sample from."},
-                            "mx": {
-                                "type": "integer",
-                                "description": "How many rows to return. Clamped to between 3 and 6.",
-                            },
-                        },
-                        "required": ["query", "table_name"],
                     },
                 },
             },
