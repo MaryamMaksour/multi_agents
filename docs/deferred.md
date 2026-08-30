@@ -82,6 +82,23 @@ first.
 
 ---
 
+## One sample value in the guidance for TEXT columns
+
+**The idea.** For a high-cardinality text column like `shelf_code` (399
+distinct of 420) the values are useless to the model, but the *shape* is not.
+Telling it `values look like: NO-12.3` lets it build a sensible
+`LIKE 'NO-%'` instead of guessing at the format.
+
+**Comes back after** feature 2, alongside listing values for ENUM columns -
+they are the same call and the same cap, just different halves of it.
+
+**Related, and not deferred:** the guidance for a TEXT column should already
+say *not* to call the distinct-values tool on it. Models call tools
+speculatively, and on `isbn` that returns a 420-value sample which is noise
+in the context. That wording belongs in feature 2.
+
+---
+
 ## The ENUM cutoff
 
 **Still unset.** `ENUM_MAX_DISTINCT` and `ENUM_MAX_RATIO` in
