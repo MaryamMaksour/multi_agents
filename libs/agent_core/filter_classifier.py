@@ -147,6 +147,16 @@ def build_guidance(table, column, kind, dist_op: str = DEFAULT_DIST_OP,
 
     if kind is FilterKind.SEMANTIC:
         partner = table.embedding_partner(column.name)
+        if partner is None:
+            # Unreachable through classify_table, which only reaches SEMANTIC
+            # when the partner exists. Reachable by a direct call, and worth
+            # saying plainly: the AttributeError one line down names neither
+            # the column nor the reason.
+            raise ValueError(
+                f"{table.name}.{column.name} was classified SEMANTIC but has no "
+                f"{EMBED_COLUMN_PREFIX}{column.name} column to search against"
+            )
+
         threshold = (
             " Lower is closer; start around 0.35 and widen it if too few rows "
             "come back."
