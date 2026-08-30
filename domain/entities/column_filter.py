@@ -1,71 +1,37 @@
-"""How a column can be filtered - derived, not hand-listed.
-
-SqlToolAdapter._get_filter is already a dictionary lookup over a `filters`
-argument taken in the constructor, so the adapter itself is finished. What is
-missing is the thing that builds that dictionary without anyone hand-writing
-it - which is what this entity and the classifier are for.
-
-The old codebase kept four hand-maintained lists (semantic, word, operation,
-datetime) and rescanned all four on every call. Almost all of that is
-recoverable from the database instead:
-
-    OPERATOR   numeric types                      -> from data_type
-    DATETIME   date / timestamp types             -> from data_type
-    SEMANTIC   text column with an embed_ partner -> from column pairing
-    ENUM       text column with few distinct values -> cardinality probe
-    TEXT       anything else
-
-Only the ENUM case needs to touch data, and only once per agent at startup.
-
-This is the piece that lowers the model-capability bar: the model never has
-to reason about which retrieval strategy a column supports, because the tool
-hands it the answer.
-"""
-
 from __future__ import annotations
+from dataclasses import dataclass     
 
 from enum import Enum
 
-# An Enum is correct here, unlike for agent keys: this IS a closed set. New
-# filter kinds are a code change, not deployment data.
 
 
 class FilterKind(Enum):
-    """The retrieval mode a column supports.
-
-    TODO: define members - OPERATOR, DATETIME, SEMANTIC, ENUM, TEXT.
+    """
+        The retrieval mode a column supports.
     """
 
-    # TODO: implement
-    ...
+    SEMANTIC       = "semantic_search"
+    OPERATOR       = "operator_search"
+    DATETIME       = "date_time_search"
+    ENUM           = "enum_search"
+    TEXT           = "text_search"
+    VECTOR_STORAGE = "vector_storage"
 
 
+@dataclass(frozen=True)
 class ColumnFilter:
-    """A column's filter kind plus the guidance string handed to the model.
+    """
+    A column's filter kind plus the guidance the model reads.
 
-    Fields to define:
-
-        column     str
-        kind       FilterKind
-        guidance   str  - the sentence the model reads, e.g. how to write the
-                          vector predicate for a SEMANTIC column, or which
-                          values exist for an ENUM one
-
-    TODO: decide whether `guidance` is stored or generated on read. Generating
-    keeps the entity small and the wording in one place; storing lets a
-    deployment override the wording per column. Given that per-deployment
-    annotation is a planned feature, storing is probably right - but then the
-    default wording still has to live somewhere single.
+    The kind is for us; the guidance is for the model. `SEMANTIC` tells the
+    SQL builder which predicate shape applies, while the guidance is the
+    sentence that gets handed over verbatim.
     """
 
-    # TODO: implement
-    ...
+    column:     str
+    kind   :    FilterKind
+    guidance:   str
 
 
-# TODO: the ENUM cutoff. Measured on the development schema:
-#   genre 10 distinct / 420 rows, language 3/420, tier 3/340, status 3/4200
-#   isbn 420/420, shelf_code 399/420
-# So `distinct <= 50 or distinct/total < 0.05` separates them cleanly there.
-# Confirm the ratio arm earns its place before keeping both.
-ENUM_MAX_DISTINCT = ...
-ENUM_MAX_RATIO = ...
+ENUM_MAX_DISTINCT = 20
+
