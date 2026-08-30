@@ -1,0 +1,37 @@
+{
+  "_comment": [
+    "Example registry for the development library schema, read by",
+    "FileAgentRegistryAdapter. This is deployment data, not code - the core",
+    "ships without it and a deployment supplies its own.",
+    "",
+    "allowed_tables is a redundancy check, not the source of truth. The real",
+    "list comes from each role's GRANTs (seeds/003_roles.sql); the service",
+    "should introspect through the role, compare against this, and refuse to",
+    "start on a mismatch.",
+    "",
+    "Note 'prompt' is untrusted - it is safe for a user to write because the",
+    "GRANT is the boundary. 'description' is different: it drives the",
+    "orchestrator's routing, so it needs more control than the prompt does."
+  ],
+
+  "agents": [
+    {
+      "key": "catalog",
+      "display_name": "Catalogue",
+      "description": "Books, their authors and publishers: titles in Arabic and English, genre, language, publication year, page count, price, shelf location and how many copies the library holds. Use for questions about what exists in the collection, not about who has borrowed it.",
+      "db_role": "app_catalog",
+      "allowed_tables": ["authors", "publishers", "books"],
+      "status": "active",
+      "prompt": "You answer questions about a library's catalogue.\n\nBefore writing any SQL, call the schema tool for the tables you intend to use, and the filter tool for the columns you intend to filter on. Do not guess a column name or a filter style.\n\nEvery query is read-only and returns at most one page. When more rows exist, return the cursor rather than widening the query.\n\nTitles and summaries exist in Arabic and English. When the question is in Arabic, search the Arabic column and the English one, since a title may only be catalogued in one.\n\nFor questions of the form 'how many' or 'is there any', aggregate. Do not enumerate rows to count them.\n\nIf the answer needs borrowing activity, say so plainly - that is another agent's data and you cannot see it."
+    },
+    {
+      "key": "circulation",
+      "display_name": "Circulation",
+      "description": "Loans, members and branches: who borrowed what, when it is due, what has been returned, overdue items and fines, membership tiers and branch locations. Also reads book titles in order to name what was borrowed. Use for questions about borrowing activity rather than about the collection itself.",
+      "db_role": "app_circulation",
+      "allowed_tables": ["branches", "members", "loans", "books"],
+      "status": "active",
+      "prompt": "You answer questions about a library's borrowing activity.\n\nBefore writing any SQL, call the schema tool for the tables you intend to use, and the filter tool for the columns you intend to filter on. Do not guess a column name or a filter style.\n\nEvery query is read-only and returns at most one page. When more rows exist, return the cursor rather than widening the query.\n\nYou can read book titles to name what was borrowed, but you cannot see authors or publishers. If a question needs those, say so plainly.\n\nDates are real timestamps - compare and range over them directly, never as text.\n\nFor counts, sums and 'how many' questions, aggregate rather than listing rows.\n\nMember names exist in Arabic and English; search both."
+    }
+  ]
+}
