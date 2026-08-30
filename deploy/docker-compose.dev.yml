@@ -1,0 +1,50 @@
+# Development infrastructure only - Postgres with pgvector, and Redis.
+# No application services here; those come in phase 2.
+#
+# The image is pgvector/pgvector rather than plain postgres on purpose. A
+# stock Postgres has no vector type, so seeds/001_schema.sql fails on its
+# first line with "extension \"vector\" is not available" - which is the
+# usual first hour lost on this stack.
+#
+#   docker compose -f deploy/docker-compose.dev.yml up -d
+#
+# Then connect DBeaver to localhost:55432, database library_dev, user dev,
+# password dev. Port 55432 rather than 5432 so this never collides with a
+# Postgres already running on the machine.
+#
+# Data lives in a named volume and survives restarts. To start clean:
+#   docker compose -f deploy/docker-compose.dev.yml down -v
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: multi_agents_dev_db
+    environment:
+      POSTGRES_USER: dev
+      POSTGRES_PASSWORD: dev
+      POSTGRES_DB: library_dev
+    ports:
+      - "55432:5432"
+    volumes:
+      - dev_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # Without this, a client can connect during the brief window while the
+      # entrypoint is still initialising and get a confusing failure.
+      test: ["CMD-SHELL", "pg_isready -U dev -d library_dev"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: multi_agents_dev_redis
+    ports:
+      - "56379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  dev_pgdata:

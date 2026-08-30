@@ -200,13 +200,22 @@ def q(value) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
+# Rows per INSERT. One statement per table would work, but a 4200-tuple
+# statement gives a GUI client nothing to report until it finishes, and
+# nothing useful to point at when something fails. Batches keep the file
+# reviewable and give per-statement progress in DBeaver or psql alike.
+BATCH = 500
+
+
 def insert(table: str, columns: list[str], rows: list[tuple]) -> None:
     if not rows:
         return
     print(f"\n-- {table}: {len(rows)} rows")
-    print(f"INSERT INTO {table} ({', '.join(columns)}) VALUES")
-    rendered = [f"  ({', '.join(q(v) for v in row)})" for row in rows]
-    print(",\n".join(rendered) + ";")
+    for start in range(0, len(rows), BATCH):
+        batch = rows[start:start + BATCH]
+        print(f"INSERT INTO {table} ({', '.join(columns)}) VALUES")
+        rendered = [f"  ({', '.join(q(v) for v in row)})" for row in batch]
+        print(",\n".join(rendered) + ";")
 
 
 EPOCH = datetime(2023, 1, 1, tzinfo=timezone.utc)
