@@ -27,6 +27,7 @@ from backend import (
     Connection,
     ask,
     classify_preview,
+    delete_agent,
     distinct_count,
     introspect,
     save_agent,
@@ -43,6 +44,7 @@ st.session_state.setdefault("schema", None)      # dict[str, TableSchema] | None
 st.session_state.setdefault("agents", [])        # list[AgentDraft]
 st.session_state.setdefault("chat", [])          # list[dict]
 st.session_state.setdefault("error", None)
+st.session_state.setdefault("editing", None)     # agent key loaded into the form
 
 
 def stub_note(text: str) -> None:
@@ -200,14 +202,43 @@ with tab_agents:
     if schema is None:
         st.info("Connect first — an agent is defined by the tables it may read.")
     else:
-        with st.form("agent"):
+        # The agent currently loaded into the form, if any. Editing reuses the
+        # same form rather than a second one, so there is one place where an
+        # agent's fields are defined and no chance of the two drifting apart.
+        editing = next(
+            (a for a in st.session_state.agents if a.key == st.session_state.editing),
+            None,
+        )
+
+        if editing:
+            st.info(f"Editing `{editing.key}`.")
+
+        # The form key changes with the agent being edited. Streamlit keeps a
+        # widget's value against its position, so without this the fields would
+        # keep whatever was typed for the previous agent and the new defaults
+        # would never appear.
+        with st.form(f"agent_{editing.key if editing else 'new'}"):
             col_a, col_b = st.columns(2)
-            key = col_a.text_input("Key", placeholder="catalog",
-                                   help="Lowercase, digits and underscores.")
-            display_name = col_b.text_input("Name", placeholder="Catalogue")
+            key = col_a.text_input(
+                "Key",
+                value=editing.key if editing else "",
+                placeholder="catalog",
+                disabled=bool(editing),
+                help=(
+                    "Lowercase, digits and underscores. Fixed once created - it names "
+                    "the agent's role and its history, so changing it is a new agent."
+                    if editing else "Lowercase, digits and underscores."
+                ),
+            )
+            display_name = col_b.text_input(
+                "Name",
+                value=editing.display_name if editing else "",
+                placeholder="Catalogue",
+            )
 
             description = st.text_area(
                 "Description",
+                value=editing.description if editing else "",
                 placeholder="Books, their authors and publishers…",
                 help=(
                     "What the orchestrator reads when deciding whether to route here. "
@@ -217,6 +248,7 @@ with tab_agents:
             )
             prompt = st.text_area(
                 "Prompt",
+                value=editing.prompt if editing else "",
                 placeholder="You answer questions about a library's catalogue…",
                 help=(
                     "The agent's own instructions. Safe for a user to write: the GRANT "
@@ -224,10 +256,27 @@ with tab_agents:
                 ),
                 height=140,
             )
-            tables = st.multiselect("Tables", sorted(schema),
-                                    help="Read from the database, not typed by hand.")
+            tables = st.multiselect(
+                "Tables",
+                sorted(schema),
+                # Only tables this connection can still read. A table that has
+                # been revoked since the agent was defined quietly drops out,
+                # which is the right way round - the grants decide.
+                default=[t for t in (editing.tables if editing else []) if t in schema],
+                help="Read from the database, not typed by hand.",
+            )
 
-            if st.form_submit_button("Save agent", type="primary"):
+            submit, cancel = st.columns([1, 5])
+            saved = submit.form_submit_button(
+                "Update agent" if editing else "Save agent", type="primary"
+            )
+            cancelled = cancel.form_submit_button("Cancel") if editing else False
+
+            if cancelled:
+                st.session_state.editing = None
+                st.rerun()
+
+            if saved:
                 if not key or not description or not tables:
                     st.error("Key, description and at least one table are required.")
                 else:
@@ -240,9 +289,15 @@ with tab_agents:
                             prompt=prompt,
                             tables=tables,
                             db_role=suggested_role_name(key.strip().lower()),
+                            # An edited agent goes back to pending: its tables
+                            # may have changed, and the grants that follow from
+                            # them have not been applied yet.
+                            status="pending",
                         ),
                     )
+                    st.session_state.editing = None
                     st.success(f"Saved `{key}` in memory.")
+                    st.rerun()
 
     if st.session_state.agents:
         st.divider()
@@ -259,6 +314,25 @@ with tab_agents:
                     "Status is `pending` because no role exists yet. Provisioning "
                     "is a separate step with privileges the request path never holds, "
                     "and an agent is not routable until it completes."
+                )
+
+                st.divider()
+                edit_col, delete_col, _ = st.columns([1, 1, 4])
+                if edit_col.button("Edit", key=f"edit_{agent.key}"):
+                    st.session_state.editing = agent.key
+                    st.rerun()
+                if delete_col.button("Delete", key=f"delete_{agent.key}"):
+                    st.session_state.agents = delete_agent(
+                        st.session_state.agents, agent.key
+                    )
+                    if st.session_state.editing == agent.key:
+                        st.session_state.editing = None
+                    st.rerun()
+                st.caption(
+                    "Nothing to undo yet — this only forgets a draft. Removing a "
+                    "provisioned agent also means dropping its Postgres role, and "
+                    "`DROP ROLE` fails while the role still holds a privilege, so "
+                    "that path runs `REASSIGN OWNED` and `DROP OWNED` first."
                 )
 
 

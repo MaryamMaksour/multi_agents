@@ -196,6 +196,23 @@ def save_agent(drafts: list[AgentDraft], draft: AgentDraft) -> list[AgentDraft]:
     return remaining + [draft]
 
 
+def delete_agent(drafts: list[AgentDraft], key: str) -> list[AgentDraft]:
+    """Remove an agent draft. STUB - in memory only.
+
+    One line here, and genuinely hard later. In phase 4 an agent owns a
+    Postgres role, and DROP ROLE fails while that role still holds a
+    privilege or owns an object - so the real path is REASSIGN OWNED, then
+    DROP OWNED, then DROP ROLE, run by the provisioner with credentials the
+    request path never has.
+
+    Two things will also have to happen before the role goes: the agent stops
+    being routable, so the orchestrator does not offer a tool it can no
+    longer call, and its history is dealt with deliberately rather than
+    cascading away with the role.
+    """
+    return [d for d in drafts if d.key != key]
+
+
 def suggested_role_name(agent_key: str) -> str:
     """The Postgres role an agent would connect as. STUB - naming only.
 
