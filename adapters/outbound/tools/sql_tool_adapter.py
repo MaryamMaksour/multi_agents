@@ -122,6 +122,222 @@ class SqlToolAdapter():
 
 
 
+    def get_tool_schemas(self) -> list[dict]:
+        """Describe the SQL tools in the format the LLM adapter passes on.
+
+        Names here must match the _handlers keys exactly - call_tool dispatches
+        on them, so a mismatch is an UnknownToolError at runtime rather than a
+        startup failure. (That includes "get_lsit_values": the spelling is the
+        contract until the handler key is renamed too.)
+
+        The descriptions carry the rules that _db_execute enforces by
+        returning {"error": ...}. Stating them here turns a wasted round trip
+        into a query the model gets right the first time - the error path stays
+        as the guarantee, this is just the shorter route to it.
+        """
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_table_schema",
+                    "description": (
+                        "Return the columns and types of the given tables. Call this "
+                        "before writing any query - never guess a column name. Tables "
+                        "outside this agent's scope come back with a message instead "
+                        "of a schema."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "tables": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Table names to describe. Ask for all of them at once.",
+                            },
+                        },
+                        "required": ["tables"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_filter",
+                    "description": (
+                        "Return how each column may be filtered: an exact comparison, a "
+                        "date range, a text match, or a vector distance. Call this for "
+                        "every column you intend to put in a WHERE clause. It decides "
+                        "the retrieval strategy for you - do not infer one from the "
+                        "column's name or type."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "columns": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Columns you intend to filter on.",
+                            },
+                            "table_name": {
+                                "type": "string",
+                                "description": "The table those columns belong to.",
+                            },
+                        },
+                        "required": ["columns", "table_name"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_lsit_values",
+                    "description": (
+                        "Return the distinct values stored in one column. Use it before "
+                        "filtering on a column whose values you have not seen, so you "
+                        "match what is actually stored rather than what the question "
+                        "called it. Above 20 distinct values it returns a sample and a "
+                        "count instead of the full list."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "table": {"type": "string", "description": "Table name."},
+                            "column": {"type": "string", "description": "Column name."},
+                        },
+                        "required": ["table", "column"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "embed_query_tool",
+                    "description": (
+                        "Turn a piece of text into a vector and return a short token "
+                        "standing for it. Required before any semantic filter: pass the "
+                        "token as a parameter to db_execute and it is resolved to the "
+                        "vector at query time. Embed each concept separately rather than "
+                        "the whole question at once, and never paste a vector into SQL."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "The phrase to embed, e.g. one column's search term.",
+                            },
+                        },
+                        "required": ["query"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "db_execute",
+                    "description": (
+                        "Run one read-only SELECT and return a page of rows. Rules the "
+                        "call is rejected for: it must be a SELECT over allowed tables "
+                        "only, with no stacked statements; the text must contain both "
+                        "'LIMIT $n' and 'OFFSET $n'; params must end with the limit and "
+                        "the offset in that order; limit is at most 100 and offset at "
+                        f"most {MAX_OFFSET}. Any parameter that is a token from "
+                        "embed_query_tool is resolved to its vector before the query "
+                        "runs. Combine every filter in a single WHERE clause - numeric "
+                        "and date comparisons alongside vector distances - rather than "
+                        "querying twice and intersecting the results yourself."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": (
+                                    "The SELECT, with positional placeholders $1, $2, ... "
+                                    "and ending in LIMIT $n OFFSET $n."
+                                ),
+                            },
+                            "params": {
+                                "type": "array",
+                                "items": {},
+                                "description": (
+                                    "Values for the placeholders, in order, ending with "
+                                    "[..., limit, offset]. A vector token may be used "
+                                    "wherever a vector is expected."
+                                ),
+                            },
+                            "offset": {
+                                "type": "integer",
+                                "description": "Starting row. Use 0 - paging is done with the returned cursor.",
+                            },
+                            "count_query": {
+                                "type": "string",
+                                "description": (
+                                    "A SELECT count(*) over the same tables and the same "
+                                    "WHERE clause, without LIMIT or OFFSET. It is what "
+                                    "makes has_more meaningful."
+                                ),
+                            },
+                            "count_params": {
+                                "type": "array",
+                                "items": {},
+                                "description": "Values for count_query, without the limit and offset.",
+                            },
+                        },
+                        "required": ["query", "params", "offset", "count_query", "count_params"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "execute_next_cursor",
+                    "description": (
+                        "Fetch the next page of a previous db_execute. Pass the "
+                        "next_cursor value exactly as returned - it already carries the "
+                        "query and the offset, so do not rebuild the query or send it "
+                        "again. Use this whenever has_more was true and you still need "
+                        "more rows."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "cursor": {
+                                "type": "string",
+                                "description": "The next_cursor from the previous result, unmodified.",
+                            },
+                        },
+                        "required": ["cursor"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_table_records",
+                    "description": (
+                        "Return a few whole rows from one table that read as closest in "
+                        "meaning to a phrase, as text. Use it to see what a table's rows "
+                        "actually look like before writing a query against it. It is not "
+                        "a substitute for db_execute: it cannot filter, count, or page."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "description": "The phrase to match rows against."},
+                            "table_name": {"type": "string", "description": "Table to sample from."},
+                            "mx": {
+                                "type": "integer",
+                                "description": "How many rows to return. Clamped to between 3 and 6.",
+                            },
+                        },
+                        "required": ["query", "table_name"],
+                    },
+                },
+            },
+        ]
+
+
     async def call_tool(self, tool_name: str, args: dict) -> Any:
         """Invoke the named tool with the given arguments and return its result.
 
