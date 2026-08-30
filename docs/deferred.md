@@ -28,15 +28,41 @@ part is a design constraint now, not a cost question for later.
 
 ---
 
-## A "before" development database
+## A "before" development database, and the column-selection heuristic
 
 **The problem.** `seeds/001_schema.sql` already has `embed_*` columns. That
 models the state *after* provisioning, so it tests the query path but not the
 path that creates those columns. A client's database will not have them.
 
+**What is blocked on it.** Classification reads the embed columns that already
+exist, and that part is finished. Deciding *which* columns deserve one on a
+database that has none is a different question, and it has no test data.
+
+The measurements taken on the development database say what the rule should
+probably be. Average word count separates every identifier from every
+semantic column with no overlap:
+
+| column | distinct | rows | avg words |
+|---|---|---|---|
+| `books.language` | 3 | 420 | 1.0 |
+| `books.genre` | 10 | 420 | 1.1 |
+| `books.shelf_code` | 399 | 420 | 1.0 |
+| `books.isbn` | 420 | 420 | 1.0 |
+| `members.email` | 340 | 340 | 1.0 |
+| `authors.name_en` | 28 | 28 | 2.2 |
+| `authors.bio` | 10 | 28 | 9.8 |
+| `books.summary` | 97 | 420 | 14.1 |
+
+Ratio is not the signal and was dropped: the same `city` column reads as 0.015
+in a 340-row table and 0.833 in a 12-row one.
+
+**Settled, and not waiting on this:** what the person is asked. Two options,
+in their words - "بحث بالمعنى وكلمات مشابهة" and "بحث دقيق" - never "should
+this column be embedded". The heuristic decides, shows the result in plain
+language, and the person can change it. It never blocks.
+
 **Comes back when** the provisioning path is built - it needs a schema with
-ordinary text columns and no vectors, so the column-selection heuristic and
-the backfill can be exercised on something realistic.
+ordinary text columns and no vectors.
 
 ---
 
@@ -47,8 +73,14 @@ the backfill can be exercised on something realistic.
 every call into an `UnknownToolError` at runtime rather than a failure at
 startup, so all three move together or none do.
 
-**Comes back when** something else is already touching that adapter. There is
-a test asserting the current spelling; it changes with the rename.
+**It has since spread.** The ENUM guidance in `build_guidance` names the tool
+in the sentence the model reads, so the rename is now four places, and there
+are tests in `tests/unit/test_filter_classifier.py` and
+`tests/security/test_untrusted_input.py` asserting the current spelling on
+purpose - a "corrected" name in the guidance alone would send the model to a
+tool that does not exist.
+
+**Comes back when** something else is already touching that adapter.
 
 ---
 
@@ -83,42 +115,6 @@ in the context. That wording belongs in feature 2.
 
 ---
 
-## The ENUM cutoff — settled at 20
-
-`ENUM_MAX_DISTINCT = 20`, chosen against the measurements below and against
-a constraint that turned out to decide it: `SqlToolAdapter._get_lsit_values`
-returns a sample plus a count above 20 rather than the full list, and the
-ENUM guidance tells the model to call that tool. A higher cutoff would
-classify columns as ENUM whose values the tool then refuses to enumerate.
-`test_the_cutoff_does_not_exceed_what_the_tool_will_list` pins the two
-together.
-
-Measured on the development database:
-
-| column | distinct | rows | ratio | avg words |
-|---|---|---|---|---|
-| `books.language` | 3 | 420 | 0.007 | 1.0 |
-| `books.genre` | 10 | 420 | 0.024 | 1.1 |
-| `books.summary` | 97 | 420 | 0.231 | 14.1 |
-| `authors.bio` | 10 | 28 | 0.357 | 9.8 |
-| `books.shelf_code` | 399 | 420 | 0.950 | 1.0 |
-| `books.isbn` | 420 | 420 | 1.000 | 1.0 |
-| `members.email` | 340 | 340 | 1.000 | 1.0 |
-| `authors.name_en` | 28 | 28 | 1.000 | 2.2 |
-
-Ratio is not used. It is unreliable on small tables - the same `city` column
-reads as 0.015 in a 340-row table and 0.833 in a 12-row one - and it turned
-out to be unnecessary anyway: a semantic column is caught by rule 2 before
-cardinality is consulted, so absolute count alone separates the cases.
-
-**Still open from these numbers:** average word count separates every
-identifier (1.0) from every semantic column (>2) with no overlap. That is
-not a classification rule - classification reads the embed columns that
-already exist. It is the heuristic for *proposing* which columns to embed on
-a database that has none yet, which needs the "before" schema above.
-
----
-
 ## Login
 
 **Parked deliberately**, and left absent rather than faked, so nothing in the
@@ -126,3 +122,116 @@ console can be mistaken for authentication that is not there.
 
 **Comes back last.** It is users, hashed passwords and sessions - a feature of
 its own, not a field on a form.
+
+---
+
+## `get_memory` filters on a column nothing writes
+
+**The bug, and it is not small.** `PostgresHistoryAdapter.get_memory` selects
+past turns `WHERE u.valid = true` for its good examples and `WHERE u.valid =
+false` for its bad ones. Nothing anywhere writes `valid`. It stays NULL,
+`NULL = true` is NULL, and both halves match no rows.
+
+So the memory feature currently costs an embedding call on every single turn
+and returns an empty list, and `RunAgentTurn` appends that empty list to the
+system prompt as `"History: []"`.
+
+**Why it is deferred rather than fixed.** The column is described in the code
+as "manually-assigned", which means the original design had a person marking
+turns good or bad - and that is a product decision, not a bug fix. The options
+are a human review step, an automatic rule (a turn whose trace contains an
+error is invalid), or dropping the distinction. Picking one without knowing
+which is worse than leaving it visible.
+
+**Cheap thing to do first, whichever wins:** stop paying for the embedding
+when the query cannot match anything.
+
+---
+
+## `get_table_records` is offered to the model and cannot work
+
+**The problem.** The handler runs:
+
+```sql
+SELECT row_txt FROM {table} ORDER BY embedding <=> $1::vector LIMIT $2
+```
+
+Neither `row_txt` nor `embedding` exists in `seeds/001_schema.sql`, or in any
+schema this design produces - embeddings live in `embed_<column>` columns
+beside the column they describe. It is a survivor from the old codebase, where
+each table had one denormalised text column and one vector for the whole row.
+
+It is declared in `get_tool_schemas`, so the model is told it exists and will
+eventually call it, and every call will fail.
+
+**Comes back when** the whole-row search idea is either rebuilt against the
+`embed_<column>` convention or dropped. Dropping is the smaller change and
+probably right: `db_execute` already combines a vector distance with ordinary
+predicates in one WHERE clause, which is strictly more useful.
+
+**Not deferred with it:** while it is declared, it is a tool the model can
+waste a turn on. Removing it from `get_tool_schemas` is safe on its own and
+does not need the larger decision.
+
+---
+
+## `lsit_values` is a dead constructor parameter
+
+`SqlToolAdapter.__init__` takes it and stores it as `self._lsit_values`, and
+nothing ever reads it.
+
+**Left in place on purpose,** because it is almost certainly the seam for
+"listing a column's values in the filter guidance" above - values read once at
+startup and handed to the adapter rather than fetched per call. Removing it
+now and adding it back later is churn.
+
+**Comes back with** that entry. If that idea is dropped instead, this goes
+with it - and the misspelling carried in the name makes it worth doing
+alongside the rename.
+
+---
+
+## No vector index on the history tables
+
+`seeds/004_history.sql` creates a btree on `(turn_id, event_type, created_at)`
+and no index on `user_message_embed`, so `get_memory`'s ordering is a
+sequential scan over the three-day window.
+
+**Deliberate for now.** An ivfflat index built on an empty table is worse than
+none - it needs representative data to pick its lists - and the three-day
+window keeps the candidate set small while a deployment is young.
+
+**Comes back when** there is real history to measure, and after the entry
+above: indexing a query that currently matches nothing would be optimising a
+no-op.
+
+---
+
+## The console cannot register an agent
+
+`ui/app.py` collects agents into Streamlit session state and they are gone
+when the tab closes. Everything else on that screen is real.
+
+**This is the design, not a gap.** `AgentRegistryPort` is read-only, because
+registration means CREATE ROLE and GRANT, and those need privileges nothing
+serving requests should hold. The console is a client; a write path from here
+would move that boundary by accident.
+
+**Comes back with the provisioner**, which is a phase 3 component with its own
+credentials and its own process - see `docs/roadmap.md`. Until then the
+honest console is one that shows drafts and says they are drafts.
+
+---
+
+## A real question has never gone through a real model
+
+Every layer up to the model call runs against real Postgres and Redis in
+`tests/integration/test_runtime_live.py`: startup, `SET ROLE`, introspection,
+GRANT verification, history checks, tool binding, and the HTTP edge. The model
+call itself needs an API key.
+
+**Left uncovered rather than skipped.** A test that skips without a key
+reports green for a path nobody ran, which is worse than an obvious hole.
+
+**Comes back the moment a key is available**, and it is the first thing to do
+then - not last. Everything downstream of it is currently reasoning.
