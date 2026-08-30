@@ -28,8 +28,12 @@ from backend import (
     ask,
     classify_preview,
     delete_agent,
+    disable_agent,
     distinct_count,
+    enable_agent,
     introspect,
+    is_provisioned,
+    run_agent,
     save_agent,
     suggested_role_name,
 )
@@ -210,8 +214,20 @@ with tab_agents:
             None,
         )
 
-        if editing:
-            st.info(f"Editing `{editing.key}`.")
+        # After Run the agent has a Postgres role, so the fields naming that
+        # role and its grants stop being editable. The text fields do not:
+        # a prompt is never right the first time, and the GRANT is the
+        # boundary, so no wording can widen what the agent reads.
+        locked = bool(editing) and is_provisioned(editing)
+
+        if editing and locked:
+            st.info(
+                f"Editing `{editing.key}` — description, name and prompt only. "
+                "Its tables and role are fixed: a role exists with grants on them, "
+                "so changing those is revoking and re-granting, not saving a form."
+            )
+        elif editing:
+            st.info(f"Editing `{editing.key}` — not provisioned yet, so anything can change.")
 
         # The form key changes with the agent being edited. Streamlit keeps a
         # widget's value against its position, so without this the fields would
@@ -259,11 +275,15 @@ with tab_agents:
             tables = st.multiselect(
                 "Tables",
                 sorted(schema),
+                disabled=locked,
                 # Only tables this connection can still read. A table that has
                 # been revoked since the agent was defined quietly drops out,
                 # which is the right way round - the grants decide.
                 default=[t for t in (editing.tables if editing else []) if t in schema],
-                help="Read from the database, not typed by hand.",
+                help=(
+                    "Fixed once provisioned - these are what the role was granted."
+                    if locked else "Read from the database, not typed by hand."
+                ),
             )
 
             submit, cancel = st.columns([1, 5])
@@ -277,6 +297,11 @@ with tab_agents:
                 st.rerun()
 
             if saved:
+                if locked:
+                    # The multiselect is disabled, so take the stored value
+                    # rather than whatever a disabled widget reports.
+                    tables = editing.tables
+
                 if not key or not description or not tables:
                     st.error("Key, description and at least one table are required.")
                 else:
@@ -288,11 +313,14 @@ with tab_agents:
                             description=description,
                             prompt=prompt,
                             tables=tables,
-                            db_role=suggested_role_name(key.strip().lower()),
-                            # An edited agent goes back to pending: its tables
-                            # may have changed, and the grants that follow from
-                            # them have not been applied yet.
-                            status="pending",
+                            db_role=(
+                                editing.db_role if editing
+                                else suggested_role_name(key.strip().lower())
+                            ),
+                            # A provisioned agent keeps its status: only text
+                            # changed, and text needs no grants. An unprovisioned
+                            # one stays pending.
+                            status=editing.status if editing else "pending",
                         ),
                     )
                     st.session_state.editing = None
@@ -302,38 +330,81 @@ with tab_agents:
     if st.session_state.agents:
         st.divider()
         st.markdown("**Defined so far**")
+        badge = {"pending": "◻ draft", "active": "● running", "disabled": "○ disabled"}
+
         for agent in st.session_state.agents:
-            with st.expander(f"`{agent.key}` — {agent.display_name}"):
+            with st.expander(f"{badge[agent.status]}  ·  `{agent.key}` — {agent.display_name}"):
                 st.write(agent.description)
                 st.markdown(
                     f"Tables: {', '.join(f'`{t}`' for t in agent.tables)}  \n"
-                    f"Would connect as: `{agent.db_role}`  \n"
+                    f"Role: `{agent.db_role}`  \n"
                     f"Status: `{agent.status}`"
-                )
-                st.caption(
-                    "Status is `pending` because no role exists yet. Provisioning "
-                    "is a separate step with privileges the request path never holds, "
-                    "and an agent is not routable until it completes."
                 )
 
                 st.divider()
-                edit_col, delete_col, _ = st.columns([1, 1, 4])
-                if edit_col.button("Edit", key=f"edit_{agent.key}"):
-                    st.session_state.editing = agent.key
-                    st.rerun()
-                if delete_col.button("Delete", key=f"delete_{agent.key}"):
-                    st.session_state.agents = delete_agent(
-                        st.session_state.agents, agent.key
+
+                if agent.status == "pending":
+                    st.caption(
+                        "Nothing exists outside this form yet, so anything can still "
+                        "change. Run creates the Postgres role and grants it SELECT on "
+                        "the tables above — after that the scope is fixed."
                     )
-                    if st.session_state.editing == agent.key:
-                        st.session_state.editing = None
-                    st.rerun()
-                st.caption(
-                    "Nothing to undo yet — this only forgets a draft. Removing a "
-                    "provisioned agent also means dropping its Postgres role, and "
-                    "`DROP ROLE` fails while the role still holds a privilege, so "
-                    "that path runs `REASSIGN OWNED` and `DROP OWNED` first."
-                )
+                    run_col, edit_col, delete_col, _ = st.columns([1, 1, 1, 3])
+
+                    if run_col.button("Run", key=f"run_{agent.key}", type="primary"):
+                        st.session_state.agents = run_agent(
+                            st.session_state.agents, agent.key
+                        )
+                        if st.session_state.editing == agent.key:
+                            st.session_state.editing = None
+                        st.rerun()
+
+                    if edit_col.button("Edit", key=f"edit_{agent.key}"):
+                        st.session_state.editing = agent.key
+                        st.rerun()
+
+                    if delete_col.button("Delete", key=f"delete_{agent.key}"):
+                        st.session_state.agents = delete_agent(
+                            st.session_state.agents, agent.key
+                        )
+                        if st.session_state.editing == agent.key:
+                            st.session_state.editing = None
+                        st.rerun()
+
+                else:
+                    st.caption(
+                        "A role exists with grants on these tables, so the tables and "
+                        "the role are fixed. The description and prompt are not: they "
+                        "are text, and the GRANT is the boundary — no wording can widen "
+                        "what this agent reads."
+                    )
+                    edit_col, toggle_col, _ = st.columns([1, 1, 4])
+
+                    if edit_col.button("Edit text", key=f"edit_{agent.key}"):
+                        st.session_state.editing = agent.key
+                        st.rerun()
+
+                    if agent.status == "active":
+                        if toggle_col.button("Disable", key=f"disable_{agent.key}"):
+                            st.session_state.agents = disable_agent(
+                                st.session_state.agents, agent.key
+                            )
+                            st.rerun()
+                        st.caption(
+                            "Disabling takes the agent out of the orchestrator's tool "
+                            "list immediately. The role and the agent's history stay — "
+                            "dropping the role is deliberate and cannot be undone."
+                        )
+                    else:
+                        if toggle_col.button("Enable", key=f"enable_{agent.key}"):
+                            st.session_state.agents = enable_agent(
+                                st.session_state.agents, agent.key
+                            )
+                            st.rerun()
+                        st.caption(
+                            "Not routable. The role and its grants were never removed, "
+                            "so enabling only puts it back in the tool list."
+                        )
 
 
 # --------------------------------------------------------------------------
@@ -383,7 +454,8 @@ with st.expander("What in here is real"):
 | Tables — distinct counts | **real** | done |
 | Tables — filter kind | preview | feature 2, the classifier |
 | Agents — table choices | **real** | done |
-| Agents — saving | stub, in memory | feature 3, the registry |
+| Agents — saving, editing, deleting | stub, in memory | feature 3, the registry |
+| Agents — Run, disable, enable | stub, flips a string | phase 4, the provisioner |
 | Agents — Postgres role | stub, name only | phase 4, the provisioner |
 | Ask — everything | stub | feature 4, then the orchestrator wiring |
 | Login | absent | left until last, on purpose |

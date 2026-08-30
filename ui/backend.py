@@ -196,19 +196,84 @@ def save_agent(drafts: list[AgentDraft], draft: AgentDraft) -> list[AgentDraft]:
     return remaining + [draft]
 
 
+def is_provisioned(draft: AgentDraft) -> bool:
+    """Whether this agent has a Postgres role behind it.
+
+    The line the console draws everywhere else. Before it, an agent is text
+    in a form and anything can change. After it, a role exists with grants
+    on real tables, and the fields naming those - key, db_role, tables -
+    stop being editable, because changing them is revoking and re-granting
+    rather than saving a form.
+
+    Description and prompt stay editable on either side: they are text, and
+    the GRANT is the boundary, so no wording can widen what the agent reads.
+    That matters more than it sounds - a prompt is never right the first
+    time, and freezing it would leave `catalog_v2` as the only way to fix a
+    sentence.
+    """
+    return draft.status in ("active", "disabled")
+
+
+LOCKED_AFTER_RUN = ("key", "db_role", "tables")
+EDITABLE_ALWAYS = ("display_name", "description", "prompt")
+
+
+def run_agent(drafts: list[AgentDraft], key: str) -> list[AgentDraft]:
+    """Provision an agent and make it routable. STUB - flips a string.
+
+    Becomes real with: phase 4, the provisioner.
+
+    What it will do, and why none of it belongs here: CREATE ROLE, GRANT
+    SELECT on the agent's tables, then set status to active. Those need
+    privileges no service handling requests should hold, so they run in a
+    separate component - and asynchronously, which is why status exists at
+    all rather than an agent simply being present or absent.
+
+    The orchestrator must not offer a tool for an agent whose role does not
+    exist yet, so nothing is routable until this completes.
+    """
+    return [
+        AgentDraft(**{**vars(d), "status": "active"}) if d.key == key else d
+        for d in drafts
+    ]
+
+
+def disable_agent(drafts: list[AgentDraft], key: str) -> list[AgentDraft]:
+    """Stop routing to an agent, without removing it. STUB.
+
+    This is what deleting a provisioned agent should mean. It takes effect
+    immediately - the orchestrator builds its tool list from active agents
+    only - while the role and the agent's history stay untouched. Dropping
+    the role is a separate, deliberate act, because it cannot be undone and
+    because DROP ROLE fails while the role still holds a privilege.
+    """
+    return [
+        AgentDraft(**{**vars(d), "status": "disabled"}) if d.key == key else d
+        for d in drafts
+    ]
+
+
+def enable_agent(drafts: list[AgentDraft], key: str) -> list[AgentDraft]:
+    """Route to a disabled agent again. STUB.
+
+    Safe and cheap: the role and its grants were never removed, so this only
+    puts the agent back in the orchestrator's tool list.
+    """
+    return [
+        AgentDraft(**{**vars(d), "status": "active"}) if d.key == key else d
+        for d in drafts
+    ]
+
+
 def delete_agent(drafts: list[AgentDraft], key: str) -> list[AgentDraft]:
-    """Remove an agent draft. STUB - in memory only.
+    """Forget an agent that was never provisioned. STUB - in memory only.
 
-    One line here, and genuinely hard later. In phase 4 an agent owns a
-    Postgres role, and DROP ROLE fails while that role still holds a
-    privilege or owns an object - so the real path is REASSIGN OWNED, then
-    DROP OWNED, then DROP ROLE, run by the provisioner with credentials the
-    request path never has.
-
-    Two things will also have to happen before the role goes: the agent stops
-    being routable, so the orchestrator does not offer a tool it can no
-    longer call, and its history is dealt with deliberately rather than
-    cascading away with the role.
+    Only offered before Run, where it really is this cheap: nothing exists
+    outside the form yet. Once a role has been created, the equivalent is
+    disable_agent, and actually dropping the role is a deliberate step of its
+    own - REASSIGN OWNED, then DROP OWNED, then DROP ROLE, run by the
+    provisioner, with the agent's history dealt with rather than cascading
+    away underneath it.
     """
     return [d for d in drafts if d.key != key]
 
