@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from domain.entities.agent_spec import AgentSpec
+from domain.entities.provider_spec import ProviderSpec
 
 
 class AgentRegistryPort(Protocol):
@@ -20,11 +20,11 @@ class AgentRegistryPort(Protocol):
 
     Methods to define:
 
-        async def get(key: str) -> AgentSpec
+        async def get(key: str) -> ProviderSpec
             Raises rather than returning None for an unknown key - a missing
             agent is a real error, and the caller cannot proceed without one.
 
-        async def list_active() -> tuple[AgentSpec, ...]
+        async def list_active() -> tuple[ProviderSpec, ...]
             The orchestrator builds its tool list from this. Only agents with
             status 'active' - a pending agent has no role granted yet, so
             routing to it would fail at the database.
