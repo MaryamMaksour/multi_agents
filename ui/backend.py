@@ -141,39 +141,46 @@ def distinct_count(conn: Connection, table: str, column: str) -> int:
 
 
 # ==========================================================================
-# STUB - column classification
+# REAL - column classification
 #
-# Becomes real with: feature 2 (filter_classifier).
+# Uses load_agent_schema, the same call the composition root will make. What
+# the Tables screen shows is what the model will be told: the same kinds, the
+# same guidance sentences, produced by the same code.
 #
-# The rules below are the intended precedence, applied here only so the
-# Tables screen can show the shape of the answer. Real classification also
-# needs the distinct counts, which this does not fetch.
+# Probing is on, so this reads data - a count(DISTINCT) per text column. On
+# the development database that is milliseconds; on a large one it is the
+# slow part, which is what probe_cardinality=False exists for.
 # ==========================================================================
 
-_NUMERIC = {"integer", "bigint", "smallint", "numeric", "real", "double precision"}
-_DATETIME = {"date", "timestamp with time zone", "timestamp without time zone", "time"}
+
+async def _classify(conn: Connection, dist_op: str = "<=>"):
+    import asyncpg
+
+    from adapters.outbound.db.postgres_db_adapter import PostgresDatabaseAdapter
+    from adapters.outbound.schema.postgres_introspection_adapter import (
+        PostgresIntrospectionAdapter,
+    )
+    from libs.agent_core.schema_bootstrap import load_agent_schema
+
+    pool = await asyncpg.create_pool(
+        host=conn.host, port=conn.port, database=conn.database,
+        user=conn.user, password=conn.password, min_size=1, max_size=2, timeout=5,
+    )
+    try:
+        schema = PostgresIntrospectionAdapter(PostgresDatabaseAdapter(pool))
+        return await load_agent_schema(schema, dist_op=dist_op)
+    finally:
+        await pool.close()
 
 
-def classify_preview(table: TableSchema, column_name: str) -> str:
-    """A provisional filter kind for one column. STUB.
+def classify(conn: Connection, dist_op: str = "<=>"):
+    """Every table's columns, classified, with the guidance text. REAL.
 
-    Follows the intended order - vector, then semantic, then type, then text -
-    but stops short of ENUM, which needs a count this does not take. Feature 2
-    replaces this with the real classifier and the guidance text the model
-    actually reads.
+    Returns an AgentSchema: `.classified[table][column]` is a ColumnFilter,
+    and `.unprobed` names any column whose distinct count could not be read -
+    those fall back to TEXT rather than failing the load.
     """
-    column = table.column(column_name)
-    if column is None:
-        return "—"
-    if column.is_vector:
-        return "VECTOR_STORAGE"
-    if table.embedding_partner(column.name) is not None:
-        return "SEMANTIC"
-    if column.sql_type in _NUMERIC:
-        return "OPERATOR"
-    if column.sql_type in _DATETIME:
-        return "DATETIME"
-    return "TEXT or ENUM"
+    return _run(_classify(conn, dist_op))
 
 
 # ==========================================================================

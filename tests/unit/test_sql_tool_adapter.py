@@ -120,6 +120,35 @@ async def test_an_unclassified_column_says_so_rather_than_failing():
     assert "not found" in result["nonexistent"].lower()
 
 
+async def test_filter_lookup_folds_case_on_the_column_name():
+    """table_name was already lowercased before the lookup; the column name
+    was not. A model that writes "Genre" got "column not found" for a column
+    it had just been shown, and no amount of retrying would have fixed it."""
+    result = await adapter().call_tool(
+        "get_filter", {"columns": ["Genre", "PAGE_COUNT"], "table_name": "books"}
+    )
+    assert result["Genre"].startswith("ENUM")
+    assert result["PAGE_COUNT"] == "OPERATOR"
+
+
+async def test_the_answer_keeps_the_spelling_the_model_asked_with():
+    """Only the lookup folds. The model matches the reply to its own request
+    by key, so answering "genre" to a question about "Genre" would leave it
+    unable to pair them."""
+    result = await adapter().call_tool(
+        "get_filter", {"columns": ["Genre"], "table_name": "books"}
+    )
+    assert "Genre" in result and "genre" not in result
+
+
+async def test_a_genuinely_unknown_column_still_says_not_found():
+    """Folding case must not turn every miss into a hit."""
+    result = await adapter().call_tool(
+        "get_filter", {"columns": ["GenreX"], "table_name": "books"}
+    )
+    assert "not found" in result["GenreX"].lower()
+
+
 async def test_filters_for_a_disallowed_table_are_refused():
     result = await adapter().call_tool(
         "get_filter", {"columns": ["id"], "table_name": "members"}

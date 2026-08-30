@@ -26,7 +26,7 @@ from backend import (
     AgentDraft,
     Connection,
     ask,
-    classify_preview,
+    classify,
     delete_agent,
     disable_agent,
     distinct_count,
@@ -45,6 +45,7 @@ st.set_page_config(page_title="Agent console", page_icon="🔐", layout="wide")
 # --------------------------------------------------------------------------
 
 st.session_state.setdefault("schema", None)      # dict[str, TableSchema] | None
+st.session_state.setdefault("filters", None)     # AgentSchema | None
 st.session_state.setdefault("agents", [])        # list[AgentDraft]
 st.session_state.setdefault("chat", [])          # list[dict]
 st.session_state.setdefault("error", None)
@@ -89,9 +90,15 @@ with st.sidebar:
     if st.button("Connect", type="primary", use_container_width=True):
         try:
             st.session_state.schema = introspect(connection)
+            # Classification runs on connect rather than on demand, because
+            # it is what the agent's startup does - and doing it here means
+            # what this screen shows is what the model would be told, not an
+            # approximation of it.
+            st.session_state.filters = classify(connection)
             st.session_state.error = None
         except Exception as e:
             st.session_state.schema = None
+            st.session_state.filters = None
             st.session_state.error = str(e)
 
     if st.session_state.error:
@@ -141,18 +148,46 @@ with tab_tables:
         chosen = st.selectbox("Table", sorted(schema))
         table = schema[chosen]
 
+        classified = (st.session_state.filters.classified.get(chosen, {})
+                      if st.session_state.filters else {})
+
         rows = []
         for column in table.columns:
             partner = table.embedding_partner(column.name)
+            entry = classified.get(column.name)
             rows.append({
                 "column": column.name,
                 "type": column.sql_type,
                 "nullable": "yes" if column.nullable else "no",
                 "embedding": partner.name if partner else "",
-                "filter kind": classify_preview(table, column.name),
+                "filter kind": entry.kind.name if entry else "—",
             })
 
         st.dataframe(rows, use_container_width=True, hide_index=True)
+
+        if classified:
+            unprobed = [
+                name for name in st.session_state.filters.unprobed
+                if name.startswith(f"{chosen}.")
+            ]
+            if unprobed:
+                st.warning(
+                    "Distinct counts could not be read for "
+                    + ", ".join(f"`{n}`" for n in unprobed)
+                    + ". Those columns fall back to TEXT - the agent still "
+                    "starts, its guidance is just thinner."
+                )
+
+            st.markdown("**The guidance the model reads.**")
+            st.caption(
+                "Not a description of the classification - it is the string "
+                "get_filter returns, verbatim. The model is told which "
+                "retrieval strategy applies rather than inferring one."
+            )
+            guidance_for = st.selectbox(
+                "Column", list(classified), key="guidance_column"
+            )
+            st.code(classified[guidance_for].guidance, language=None)
 
         searchable = [c.name for c in table.columns if table.embedding_partner(c.name)]
         left, right = st.columns(2)

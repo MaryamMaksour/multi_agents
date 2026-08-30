@@ -344,7 +344,13 @@ class SqlToolAdapter():
             filters = {}
    
             for col in columns:
-                filters[col] = self._filters[table_key].get(col, "column not found")
+                # The lookup folds case, the answer does not: keys are the
+                # model's own spelling so it can match them to what it asked
+                # for, while the classifier keys on Postgres's lowercase
+                # names. A model that writes "Genre" was told about "genre".
+                filters[col] = self._filters[table_key].get(
+                    (col or "").lower(), "column not found"
+                )
  
 
             return filters

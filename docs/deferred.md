@@ -40,22 +40,6 @@ the backfill can be exercised on something realistic.
 
 ---
 
-## `_get_filter` is case-sensitive on column names
-
-**The bug.** In `SqlToolAdapter._get_filter`:
-
-```python
-filters[col] = self._filters[table_key].get(col, "column not found")
-```
-
-`table_key` is lowercased; `col` is not. A model that writes `Genre` when the
-classifier keyed `genre` gets "column not found" for a column that exists.
-
-**Parked because** it was found mid-way through another change and is not
-worth mixing in. **Comes back with** feature 2, which owns that dictionary.
-
----
-
 ## `get_lsit_values` is misspelled
 
 **The constraint.** It is a dispatch key in `_handlers`, a name in
@@ -99,10 +83,15 @@ in the context. That wording belongs in feature 2.
 
 ---
 
-## The ENUM cutoff
+## The ENUM cutoff — settled at 20
 
-**Still unset.** `ENUM_MAX_DISTINCT` and `ENUM_MAX_RATIO` in
-`libs/agent_core/filter_classifier.py` are placeholders.
+`ENUM_MAX_DISTINCT = 20`, chosen against the measurements below and against
+a constraint that turned out to decide it: `SqlToolAdapter._get_lsit_values`
+returns a sample plus a count above 20 rather than the full list, and the
+ENUM guidance tells the model to call that tool. A higher cutoff would
+classify columns as ENUM whose values the tool then refuses to enumerate.
+`test_the_cutoff_does_not_exceed_what_the_tool_will_list` pins the two
+together.
 
 Measured on the development database:
 
@@ -117,10 +106,16 @@ Measured on the development database:
 | `members.email` | 340 | 340 | 1.000 | 1.0 |
 | `authors.name_en` | 28 | 28 | 1.000 | 2.2 |
 
-Two things the numbers already settle: average word count separates every
-identifier (1.0) from every semantic column (>2) with no overlap, and ratio
-alone is unreliable on small tables - `city` reads as 0.015 in a 340-row
-table and 0.833 in a 12-row one.
+Ratio is not used. It is unreliable on small tables - the same `city` column
+reads as 0.015 in a 340-row table and 0.833 in a 12-row one - and it turned
+out to be unnecessary anyway: a semantic column is caught by rule 2 before
+cardinality is consulted, so absolute count alone separates the cases.
+
+**Still open from these numbers:** average word count separates every
+identifier (1.0) from every semantic column (>2) with no overlap. That is
+not a classification rule - classification reads the embed columns that
+already exist. It is the heuristic for *proposing* which columns to embed on
+a database that has none yet, which needs the "before" schema above.
 
 ---
 
