@@ -66,6 +66,19 @@ AGENTS_REGISTRY_PATH = os.getenv("AGENTS_REGISTRY_PATH", "seeds/agents.example.j
 # differing only in this value. Empty in the orchestrator, which serves none.
 AGENT_KEY = os.getenv("AGENT_KEY", "")
 
+# Where a sub-agent answers, when its registry entry does not say. `{key}` is
+# the agent's own name, which is also its service name in a compose file or a
+# Kubernetes Service - so the default is right for the common deployment and
+# an entry's own `endpoint` overrides it for anything else.
+#
+# Still not per-agent configuration: this is one template, and which agents
+# exist comes from the registry.
+AGENT_URL_TEMPLATE = os.getenv("AGENT_URL_TEMPLATE", "http://agent-{key}:8000/run")
+
+# What this process listens on.
+HTTP_HOST = os.getenv("HTTP_HOST", "0.0.0.0")
+HTTP_PORT = int(os.getenv("HTTP_PORT", "8000"))
+
 # --- Limits ---------------------------------------------------------------
 # How many pages one tool may be walked through in a single turn. Without it
 # a model that keeps seeing has_more=true will page until the context fills.

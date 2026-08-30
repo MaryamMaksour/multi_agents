@@ -1,0 +1,116 @@
+# The whole system: infrastructure, one container per sub-agent, and the
+# orchestrator. All from one image, differing only in AGENT_KEY.
+#
+#   QWEN_API_KEY=... docker compose -f deploy/docker-compose.yml up --build
+#
+# Then:
+#   curl localhost:8000/health                      the orchestrator
+#   curl localhost:8001/health                      the catalog agent
+#   curl -X POST localhost:8000/ask -H 'content-type: application/json' \
+#        -d '{"question":"How many Arabic novels under 300 pages?","session_id":"s1"}'
+#
+# The service names matter. AGENT_URL_TEMPLATE resolves an agent to
+# http://agent-<key>:8000/run, so a service named agent-catalog is reachable
+# by registering an agent called catalog and nothing else - which is the
+# point: registering an agent should not also mean editing this file.
+#
+# Infrastructure ports are the dev ones (55432 / 56379) so this and
+# docker-compose.dev.yml describe the same database.
+
+x-agent-base: &agent-base
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+  environment: &agent-env
+    PG_HOST: postgres
+    PG_PORT: "5432"
+    PG_DBNAME: library_dev
+    # The authenticator, not an agent role and not the superuser. Each pool
+    # runs SET ROLE to become its agent; see seeds/003_roles.sql.
+    PG_USER: app_authenticator
+    PG_PASSWORD: dev_authenticator
+    REDIS_URL: redis://redis:6379/1
+    AGENTS_REGISTRY_PATH: seeds/agents.example.json
+    QWEN_API_KEY: ${QWEN_API_KEY:?set QWEN_API_KEY in your shell or a .env file}
+    QWEN_API_URL: ${QWEN_API_URL:-https://dashscope-intl.aliyuncs.com/compatible-mode/v1}
+    QWEN_MODEL: ${QWEN_MODEL:-qwen3-14b}
+    DIST_OP: ${DIST_OP:-<=>}
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: multi_agents_dev_db
+    environment:
+      POSTGRES_USER: dev
+      POSTGRES_PASSWORD: dev
+      POSTGRES_DB: library_dev
+    ports:
+      - "55432:5432"
+    volumes:
+      - dev_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dev -d library_dev"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: multi_agents_dev_redis
+    ports:
+      - "56379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One per agent in the registry. Each verifies its own scope against the
+  # GRANTs at startup and refuses to come up on a mismatch, so a container
+  # that is running is a container whose registry entry and privileges agree.
+  agent-catalog:
+    <<: *agent-base
+    container_name: multi_agents_agent_catalog
+    environment:
+      <<: *agent-env
+      AGENT_KEY: catalog
+    ports:
+      - "8001:8000"
+
+  agent-circulation:
+    <<: *agent-base
+    container_name: multi_agents_agent_circulation
+    environment:
+      <<: *agent-env
+      AGENT_KEY: circulation
+    ports:
+      - "8002:8000"
+
+  # No AGENT_KEY, so this is the orchestrator. It holds one delegate tool per
+  # registered sub-agent and no database access of its own beyond history.
+  orchestrator:
+    <<: *agent-base
+    container_name: multi_agents_orchestrator
+    environment:
+      <<: *agent-env
+      AGENT_KEY: ""
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      agent-catalog:
+        condition: service_started
+      agent-circulation:
+        condition: service_started
+
+volumes:
+  dev_pgdata:

@@ -146,10 +146,17 @@ async def test_display_name_falls_back_to_the_key(tmp_path):
     assert (await registry(tmp_path, entry).get("catalog")).display_name == "catalog"
 
 
-async def test_the_history_table_is_infrastructure_not_registry_data(tmp_path):
-    """Nobody registering an agent should have to know what a history table
-    is, so it defaults rather than being required."""
-    assert (await registry(tmp_path).get("catalog")).history_table == "agent_history"
+async def test_the_history_table_is_derived_from_the_agent_name(tmp_path):
+    """Nobody registering an agent should have to name a history table, and
+    every agent needs its own - a shared one would mean the catalogue agent's
+    memory search returning the circulation agent's past questions."""
+    assert (await registry(tmp_path).get("catalog")).history_table == "history_catalog"
+
+
+async def test_an_explicit_history_table_is_still_honoured(tmp_path):
+    """For a deployment migrating an existing table in."""
+    spec = await registry(tmp_path, agent(history_table="legacy_catalog_log")).get("catalog")
+    assert spec.history_table == "legacy_catalog_log"
 
 
 async def test_omitting_allowed_tables_means_whatever_the_role_can_read(tmp_path):

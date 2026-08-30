@@ -34,7 +34,7 @@ from domain.exceptions import RegistryError, UnknownAgentError
 # every table its role can read, which is the wrong way for a typo to fail.
 _KNOWN_FIELDS = frozenset({
     "key", "display_name", "description", "prompt", "db_role",
-    "allowed_tables", "status", "type", "history_table", "tools",
+    "allowed_tables", "status", "type", "history_table", "tools", "endpoint",
 })
 
 # Anything starting with _ is a comment. seeds/agents.example.json uses
@@ -179,6 +179,7 @@ class FileAgentRegistryAdapter:
             return ProviderSpec(
                 name=key,
                 display_name=self._text(entry, "display_name", where, required=False),
+                endpoint=self._text(entry, "endpoint", where, required=False),
                 description=self._text(entry, "description", where),
                 system_prompt=self._text(entry, "prompt", where),
                 db_role=self._text(entry, "db_role", where),

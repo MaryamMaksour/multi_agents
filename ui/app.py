@@ -23,9 +23,12 @@ from __future__ import annotations
 import streamlit as st
 
 from backend import (
+    ORCHESTRATOR_URL,
     AgentDraft,
     Connection,
     ask,
+    orchestrator_status,
+    registered_agents,
     classify,
     delete_agent,
     disable_agent,
@@ -48,6 +51,7 @@ st.session_state.setdefault("schema", None)      # dict[str, TableSchema] | None
 st.session_state.setdefault("filters", None)     # AgentSchema | None
 st.session_state.setdefault("agents", [])        # list[AgentDraft]
 st.session_state.setdefault("chat", [])          # list[dict]
+st.session_state.setdefault("session_id", "")    # one conversation with the orchestrator
 st.session_state.setdefault("error", None)
 st.session_state.setdefault("editing", None)     # agent key loaded into the form
 
@@ -443,35 +447,71 @@ with tab_agents:
 
 
 # --------------------------------------------------------------------------
-# 3 - ask. STUB.
+# 3 - ask. REAL, when an orchestrator is running.
 # --------------------------------------------------------------------------
 
 with tab_chat:
-    stub_note(
-        "no model is called and no SQL runs. The trace shows the path a question "
-        "will take once the orchestrator is wired up."
-    )
+    import uuid as _uuid
 
-    if not st.session_state.agents:
-        st.info("Define an agent first — the orchestrator routes by description.")
+    if not st.session_state.session_id:
+        st.session_state.session_id = f"console-{_uuid.uuid4().hex[:8]}"
+
+    orchestrator_url = st.text_input(
+        "Orchestrator", value=ORCHESTRATOR_URL,
+        help="Where the orchestrator is listening. It is the same endpoint any "
+             "other client uses - there is no console-specific path in.",
+    )
+    status = orchestrator_status(orchestrator_url)
+
+    if not status["reachable"]:
+        st.warning(
+            f"No orchestrator at `{orchestrator_url}`. Start the system with\n\n"
+            "```\ndocker compose -f deploy/docker-compose.yml up --build\n```\n\n"
+            "Nothing here fakes an answer, so the question box stays disabled "
+            "until one is up."
+        )
+        st.caption(f"Last error: {status['error']}")
+    else:
+        live = registered_agents(orchestrator_url)
+        st.success(
+            f"Connected. Routing to {len(live)} agent(s): "
+            + ", ".join(f"`{a['key']}`" for a in live)
+        )
+        st.caption(
+            "The orchestrator picks by description and sends a self-contained "
+            "question. Everything factual in the answer came from an agent's "
+            "SQL - the orchestrator has no database access of its own."
+        )
+        with st.expander("What the orchestrator routes on"):
+            for a in live:
+                st.markdown(f"**{a['display_name']}** — {a['description']}")
 
     for entry in st.session_state.chat:
         with st.chat_message("user"):
             st.write(entry["question"])
         with st.chat_message("assistant"):
-            for step in entry["result"]["steps"]:
-                icon = {"route": "🧭", "delegate": "📨", "sql": "🗄️", "result": "📄"}
-                st.markdown(f"{icon.get(step['kind'], '•')} {step['detail']}")
-                if "payload" in step:
-                    st.json(step["payload"], expanded=False)
-            st.markdown(entry["result"]["answer"])
+            result = entry["result"]
+            if not result.get("ok"):
+                st.error(result["error"])
+            else:
+                st.markdown(result["answer"])
+                paging = {k: v for k, v in result.get("pagination", {}).items()
+                          if v.get("has_more")}
+                if paging:
+                    st.caption(
+                        "More rows exist for: "
+                        + ", ".join(f"`{k}`" for k in paging)
+                        + " — ask for the next page and the cursor is reused."
+                    )
+                st.caption(f"turn {result.get('turn_id', '')}")
 
-    question = st.chat_input("Ask something about the data…")
+    question = st.chat_input(
+        "Ask something about the data…", disabled=not status["reachable"],
+    )
     if question:
-        st.session_state.chat.append({
-            "question": question,
-            "result": ask(question, st.session_state.agents),
-        })
+        with st.spinner("Delegating…"):
+            result = ask(question, st.session_state.session_id, orchestrator_url)
+        st.session_state.chat.append({"question": question, "result": result})
         st.rerun()
 
 
@@ -487,12 +527,12 @@ with st.expander("What in here is real"):
 |---|---|---|
 | Tables — list, columns, types, embedding partners | **real** | done |
 | Tables — distinct counts | **real** | done |
-| Tables — filter kind | preview | feature 2, the classifier |
+| Tables — filter kind and guidance | **real** | done |
 | Agents — table choices | **real** | done |
-| Agents — saving, editing, deleting | stub, in memory | feature 3, the registry |
+| Agents — saving, editing, deleting | stub, in memory | the provisioner: the registry is read-only from here by design |
 | Agents — Run, disable, enable | stub, flips a string | phase 4, the provisioner |
 | Agents — Postgres role | stub, name only | phase 4, the provisioner |
-| Ask — everything | stub | feature 4, then the orchestrator wiring |
+| Ask — the whole path | **real**, needs a running orchestrator | done |
 | Login | absent | left until last, on purpose |
 """
     )

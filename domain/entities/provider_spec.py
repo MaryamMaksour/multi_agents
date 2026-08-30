@@ -41,11 +41,22 @@ _NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,30}$")
 # from it.
 RESERVED_ROLE_PREFIX = "pg_"
 
-# One shared history table, with row-level security keyed on the agent,
-# rather than a table per agent. A table per agent means the provisioner runs
-# DDL every time somebody registers one, and DDL is the privilege you least
-# want reachable from a registration form.
-DEFAULT_HISTORY_TABLE = "agent_history"
+# One history table per agent, named from the agent. Creating it is DDL, so
+# it belongs to the provisioner - the same component that creates the role,
+# and the only one that should hold DDL rights at all.
+#
+# The alternative considered was a single shared table with the agent as a
+# column. It has one fewer object to create, and it is wrong here: memory is
+# read back by `get_memory`, which is a vector search over past turns, so a
+# shared table means the catalogue agent learning from the circulation
+# agent's questions. Isolation by table needs nothing to be remembered
+# correctly; isolation by column needs every query to remember a filter.
+HISTORY_TABLE_PREFIX = "history_"
+
+# Longer than an agent name, because it is derived from one: `history_` plus
+# a name that may itself be 31 characters. Postgres truncates identifiers at
+# 63 bytes, which is the real ceiling.
+_TABLE_RE = re.compile(r"^[a-z][a-z0-9_]{1,62}$")
 
 # The orchestrator reads every routable agent's description on every routing
 # decision, so their combined length is a per-turn cost paid by all of them.
@@ -84,11 +95,18 @@ class ProviderSpec:
     # required, so registering an agent is a name, a prompt, a description
     # and a set of tables - and nobody filling in a form has to know what a
     # history table is.
-    history_table: str = DEFAULT_HISTORY_TABLE
+    history_table: str = ""
     tools: List[str] = field(default_factory=list)
 
     # What a person sees. Falls back to `name`, which is machine-shaped.
     display_name: str = ""
+
+    # Where this agent answers, for the orchestrator to POST to. Empty means
+    # "derive it from the deployment's URL template" - which is what a
+    # compose file or a Kubernetes service gives you for free, since the
+    # hostname is the agent's own name. Set it only when an agent lives
+    # somewhere the template does not describe.
+    endpoint: str = ""
 
     status: AgentStatus = AgentStatus.PENDING
 
@@ -118,9 +136,14 @@ class ProviderSpec:
                 "predefined role - several of which read or write files on the "
                 "database host. An agent's role is one the provisioner created."
             )
-        # Interpolated into INSERT INTO for the same reason: a table name is
-        # not a parameter.
-        if not _NAME_RE.match(self.history_table or ""):
+        # Derived rather than required. Nobody registering an agent should
+        # have to name a history table, and every agent needs its own.
+        if not self.history_table:
+            self.history_table = f"{HISTORY_TABLE_PREFIX}{self.name}"
+
+        # Interpolated into INSERT INTO for the same reason db_role is: a
+        # table name is not a parameter.
+        if not _TABLE_RE.match(self.history_table):
             raise ValueError(
                 f"Invalid history_table: {self.history_table!r}. It is used as a "
                 "SQL identifier."

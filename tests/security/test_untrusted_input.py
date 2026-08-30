@@ -116,10 +116,14 @@ def test_a_hostile_db_role_is_refused_at_load(tmp_path, value):
         FileAgentRegistryAdapter(registry_with(tmp_path, db_role=value))
 
 
-@pytest.mark.parametrize("value", INJECTION_ATTEMPTS + REFUSED_AS_AN_AGENT_NAME)
+# Empty is absent from this list on purpose: an omitted history_table is not
+# hostile, it means "derive it from the agent name", which is the ordinary
+# case. Every other value here still has to be refused.
+@pytest.mark.parametrize(
+    "value", [v for v in INJECTION_ATTEMPTS if v] + ["APP_CATALOG", "a" * 200])
 def test_a_hostile_history_table_is_refused_at_load(tmp_path, value):
-    """Same reasoning, different statement: a table name in INSERT INTO is
-    not a parameter either."""
+    """Same reasoning as db_role, different statement: a table name in
+    INSERT INTO is not a parameter either."""
     with pytest.raises(RegistryError):
         FileAgentRegistryAdapter(registry_with(tmp_path, history_table=value))
 

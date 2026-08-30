@@ -135,10 +135,40 @@ cannot tell that apart from "no data".
 Tests: `tests/unit/test_agent_startup.py`,
 `tests/integration/test_agent_startup_live.py`.
 
-**Still to build in this area:** the inbound HTTP adapter and the FastAPI
-lifespan that owns the per-agent connection pools. `start_agent` takes a
-SchemaPort that must already be connected as the agent's role - that is the
-one thing it cannot check for itself, and the composition root owns it.
+### Feature 5 - the composition root and the HTTP edge · **done**
+
+| file | what it is |
+|---|---|
+| `libs/agent_core/composition.py` | assembly (decisions, no I/O) and `open_runtime` (resources, no decisions) |
+| `libs/agent_core/prompts.py` | the orchestrator's prompt - system behaviour, so it is versioned with the code |
+| `adapters/inbound/http/` | FastAPI. `/run`, `/ask`, `/health`, `/agents` |
+| `main.py`, `deploy/Dockerfile`, `deploy/docker-compose.yml` | one image, three shapes |
+| `seeds/004_history.sql` | per-agent history tables, granted to the service alone |
+
+One image; `AGENT_KEY` decides what a container becomes. Every agent pool logs
+in as the authenticator and runs `SET ROLE` per connection - one credential for
+the whole service rather than one per agent, which past a handful is the
+difference between a config file and a secret-distribution problem.
+
+The authenticator is `NOINHERIT`, and that word is the whole security argument
+for this pattern: membership grants the *right to become* a role rather than
+that role's privileges, so the floor is empty rather than the union of every
+agent's access.
+
+Two things this phase changed after being run for real rather than reasoned
+about:
+
+- **`ensure_schema()` is no longer called at startup.** Creating a table is
+  DDL, and the authenticator holds none - correctly. Startup now *verifies*
+  history is writable and says what to run when it is not.
+- **History is one table per agent**, derived as `history_<name>`. A shared
+  table was the first design and it is wrong: `get_memory` is a vector search
+  over past turns, so sharing means the catalogue agent learning from the
+  circulation agent's questions.
+
+Tests: `tests/unit/test_composition.py`, `tests/unit/test_http_app.py`,
+`tests/integration/test_composition_live.py`,
+`tests/integration/test_runtime_live.py`.
 
 ---
 
@@ -166,21 +196,22 @@ pytest
 
 ---
 
-## Phase 2 - the orchestrator
+## Phase 2 - the orchestrator · **done**
 
-One agent answering questions becomes several, with a main agent that routes.
-
-Already written, from the earlier work: `domain/interactors/run_agent_turn.py`,
-`adapters/outbound/agent_loop/langgraph_agent_loop_adapter.py`,
-`adapters/outbound/tools/http_delegate_tool_adapter.py`,
-`adapters/outbound/llm/qwen_llm_adapter.py`.
-
-Not written: the inbound HTTP adapter (`adapters/inbound/` does not exist),
-and the composition root that assembles any of it.
+One agent answering questions became several, with a main agent that routes.
 
 The routing decision reads each agent's `description`. Sub-agents keep no
-history of their own - the orchestrator resolves every reference before
-delegating, so a sub-agent always receives a self-contained question.
+conversation history - the orchestrator resolves every reference before
+delegating, so a sub-agent always receives a self-contained question, and two
+callers' contexts can never mix.
+
+**What has never been run:** a real question, end to end, through a real
+model. Everything up to the model call is exercised against real Postgres and
+Redis in `tests/integration/test_runtime_live.py` - startup, scope
+verification, tool binding, the HTTP edge. The model call itself needs an API
+key, and a test that skips without one reports green for a path nobody ran.
+That boundary is drawn deliberately and is the first thing to close with a
+key in hand.
 
 ---
 
@@ -226,5 +257,8 @@ is labelled REAL or STUB, and a stub names the feature that will make it
 real - a console that quietly fakes an answer is worse than no console,
 because it teaches you the system works when it does not.
 
-Today: the Tables screen is real, the Agents screen keeps drafts in session
-state, and the Ask screen returns a hand-written trace.
+Today: Tables is real, and Ask is real - it posts to the orchestrator's own
+`/ask`, and disables the question box rather than inventing a trace when
+nothing is listening. Agents still keeps drafts in session state, and will
+until the provisioner exists: the registry is read-only from the request path
+by design, so the console cannot write to it and should not pretend to.

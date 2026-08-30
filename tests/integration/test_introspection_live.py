@@ -65,13 +65,19 @@ async def introspect(credentials=ADMIN):
 
 
 async def test_lists_the_development_tables():
+    """The library tables. The history tables from seeds/004_history.sql are
+    also present for an administrative connection, and are excluded here
+    rather than asserted on - they are the service's, not the schema under
+    test, and an agent role never sees them at all."""
     pool, schema = await introspect()
     try:
-        assert set(await schema.list_tables()) == {
-            "authors", "publishers", "books", "branches", "members", "loans",
-        }
+        listed = set(await schema.list_tables())
     finally:
         await pool.close()
+
+    assert {t for t in listed if not t.startswith("history_")} == {
+        "authors", "publishers", "books", "branches", "members", "loans",
+    }
 
 
 async def test_describes_books_with_its_real_columns():

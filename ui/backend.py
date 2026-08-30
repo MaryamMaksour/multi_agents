@@ -16,6 +16,7 @@ caller of the orchestrator, and lives outside the hexagon on purpose.
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -296,77 +297,91 @@ def suggested_role_name(agent_key: str) -> str:
 
 
 # ==========================================================================
-# STUB - asking a question
+# REAL - asking a question, when an orchestrator is running
 #
-# Becomes real with: feature 4 and phase 2 (the orchestrator's inbound
-# adapter and composition root). This returns a fixed trace so the delegation
-# flow is visible before any of it runs: which agent the orchestrator picks,
-# what the sub-agent is asked, what comes back, and what the user finally
-# sees.
+# Posts to the orchestrator's /ask, which is the same endpoint any other
+# client uses. There is no console-specific path into the system: if this
+# works, the deployment works.
 #
-# No model is called. No SQL runs. Every value below is written by hand.
+# It needs the orchestrator up (deploy/docker-compose.yml). When it is not,
+# this says so plainly instead of returning a fabricated trace - a console
+# that invents an answer teaches you the system works when it does not.
 # ==========================================================================
 
+ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "http://localhost:8000")
 
-def ask(question: str, agents: list[AgentDraft]) -> dict[str, Any]:
-    """Answer a question by delegating to a sub-agent. STUB.
 
-    The shape is the real one - RunAgentTurn returns messages plus pagination
-    state per tool, and the orchestrator's tools are one per registered agent -
-    so wiring this later means replacing the body, not the caller.
+async def _ask(question: str, session_id: str, url: str) -> dict[str, Any]:
+    import httpx
+
+    async with httpx.AsyncClient(timeout=180) as client:
+        response = await client.post(
+            f"{url.rstrip('/')}/ask",
+            json={"question": question, "session_id": session_id},
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+async def _agents(url: str) -> list[dict[str, Any]]:
+    import httpx
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        response = await client.get(f"{url.rstrip('/')}/agents")
+        response.raise_for_status()
+        return response.json()
+
+
+def orchestrator_status(url: str = ORCHESTRATOR_URL) -> dict[str, Any]:
+    """Whether an orchestrator is reachable, and who it routes to. REAL.
+
+    Checked before offering the question box, so "nothing happens when I press
+    ask" becomes "the orchestrator is not running" - which is a much shorter
+    thing to fix.
     """
-    target = agents[0] if agents else None
+    async def check():
+        import httpx
 
-    if target is None:
+        async with httpx.AsyncClient(timeout=5) as client:
+            response = await client.get(f"{url.rstrip('/')}/health")
+            response.raise_for_status()
+            return response.json()
+
+    try:
+        return {"reachable": True, **_run(check())}
+    except Exception as e:
+        return {"reachable": False, "error": str(e)}
+
+
+def ask(question: str, session_id: str, url: str = ORCHESTRATOR_URL) -> dict[str, Any]:
+    """Answer a question by delegating to a sub-agent. REAL.
+
+    The orchestrator picks the agent, sends it a self-contained question, and
+    combines what comes back. Everything factual in the answer came from an
+    agent's SQL - the orchestrator has no database access of its own.
+    """
+    try:
+        body = _run(_ask(question, session_id, url))
+    except Exception as e:
         return {
-            "steps": [],
-            "answer": "No agents registered yet. Define one on the Agents tab first.",
-            "stub": True,
+            "ok": False,
+            "answer": "",
+            "error": (
+                f"Could not reach the orchestrator at {url}: {e}\n\n"
+                "Start it with:  docker compose -f deploy/docker-compose.yml up"
+            ),
         }
+    return {"ok": True, **body}
 
-    return {
-        "steps": [
-            {
-                "kind": "route",
-                "detail": (
-                    f"Orchestrator read the descriptions of {len(agents)} agent(s) "
-                    f"and chose **{target.key}**."
-                ),
-            },
-            {
-                "kind": "delegate",
-                "detail": (
-                    f"Called `{target.key}` with a self-contained question. "
-                    "Sub-agents keep no history, so every reference is resolved first."
-                ),
-                "payload": {"query": question, "cursor": None},
-            },
-            {
-                "kind": "sql",
-                "detail": (
-                    f"`{target.key}` asked for the schema and the filter kinds, then "
-                    "wrote one query combining every condition."
-                ),
-                "payload": {
-                    "query": "SELECT title_en, page_count\n"
-                             "FROM books\n"
-                             "WHERE page_count < $1\n"
-                             "  AND language = $2\n"
-                             "LIMIT $3 OFFSET $4",
-                    "params": [300, "Arabic", 10, 0],
-                    "note": "hand-written placeholder - no model wrote this and it never ran",
-                },
-            },
-            {
-                "kind": "result",
-                "detail": "Sub-agent returned one page.",
-                "payload": {"rows": 10, "has_more": True, "next_cursor": "…"},
-            },
-        ],
-        "answer": (
-            "This is a placeholder answer. The trace above shows the path a real "
-            "question will take once the orchestrator is wired up - it is not the "
-            "result of running anything."
-        ),
-        "stub": True,
-    }
+
+def registered_agents(url: str = ORCHESTRATOR_URL) -> list[dict[str, Any]]:
+    """Who the running orchestrator can route to. REAL.
+
+    Read from the orchestrator rather than from the registry file, so what
+    the console shows is what the running system will actually use - the two
+    differ whenever the file has been edited since the process started.
+    """
+    try:
+        return _run(_agents(url))
+    except Exception:
+        return []

@@ -1,12 +1,128 @@
-# Multi-agents NL2SQL  + Hexagonal Architecture
+# Multi-agent NL2SQL, on a hexagonal core
 
+A person registers an agent — a name, a description, a prompt, and the tables
+it may read. The system creates a Postgres role, grants that role `SELECT` on
+exactly those tables, and the agent starts answering questions about them. An
+orchestrator routes between agents by their descriptions.
 
-# ENV
-## Install Python using MiniConda
-1- Download and install MiniConda
-2- Create a new environment using the following command:
-        $ conda create -n multi-agents
-3- Activate the environment:
-        $ conda activate multi-agents
+Nothing in the core knows the tables' names, the agents' names, or what any of
+them are for. All of that is deployment data.
 
+## The two ideas everything else follows from
 
+**The prompt is untrusted; the GRANT is trusted.** A user writes their own
+agent's prompt, and it is safe to let them, because no wording can widen what
+its role may read. The security boundary is the database's, not the model's.
+
+**The allowlist derives itself.** `information_schema` reports only the
+objects the connected role holds a privilege on. Introspect through an agent's
+own role and the answer *is* that agent's scope — there is no list in code that
+can drift from the GRANTs.
+
+Both are enforced rather than asserted. `libs/agent_core/agent_startup.py`
+compares an agent's declared tables against what its role can really read and
+refuses to start on a mismatch, in either direction.
+
+## Running it
+
+```bash
+# 1. Infrastructure
+docker compose -f deploy/docker-compose.dev.yml up -d
+
+# 2. Schema, data, roles, history tables - in that order
+DB="docker exec -i multi_agents_dev_db psql -U dev -d library_dev"
+$DB < seeds/001_schema.sql
+python3 seeds/002_generate_data.py | $DB
+$DB < seeds/003_roles.sql
+$DB < seeds/004_history.sql
+
+# 3. The system: one container per agent, plus the orchestrator
+export QWEN_API_KEY=...
+docker compose -f deploy/docker-compose.yml up --build
+```
+
+Then:
+
+```bash
+curl localhost:8000/health          # the orchestrator, and who it routes to
+curl localhost:8001/health          # the catalog agent, and its tables
+
+curl -X POST localhost:8000/ask -H 'content-type: application/json' \
+     -d '{"question":"How many Arabic novels under 300 pages?","session_id":"s1"}'
+```
+
+`/health` reports the tables each agent actually resolved. A sub-agent that is
+up but reading the wrong tables is the failure this design exists to prevent,
+so it is visible from outside the process without a query or a log.
+
+### One image, three shapes
+
+`AGENT_KEY` decides what a container becomes. Set it and the process serves
+that one agent on `/run`; leave it empty and the process is the orchestrator,
+serving `/ask`. Same bytes either way, so there is no per-agent build to keep
+in step with the registry.
+
+### The development console
+
+```bash
+pip install -r requirements.txt
+streamlit run ui/app.py
+```
+
+A client like any other — it lives outside the hexagon and calls the same
+endpoints. Every function in `ui/backend.py` is labelled REAL or STUB, and a
+stub names what will make it real.
+
+## Tests
+
+```bash
+pytest                              # unit + security; integration skips
+```
+
+Four kinds, answering different questions:
+
+| where | what it checks |
+|---|---|
+| `tests/unit/` | behaviour against fakes — no services, milliseconds |
+| `tests/integration/` | the assumptions those fakes encode, against a real Postgres and real least-privilege roles |
+| `tests/security/` | adversarial input against the boundaries, including the claim that a prompt cannot widen scope |
+| `tests/unit/test_port_conformance.py` | every adapter still matches its port by name, signature and async-ness; every module imports |
+
+The integration tests are the ones worth the setup, because the security
+argument is an assumption about `information_schema` that no fake can check.
+They need the database from step 2 above, plus Redis, and skip cleanly without
+either.
+
+## Layout
+
+```
+domain/          entities, ports, interactors - no I/O, no framework
+adapters/
+  inbound/http/  FastAPI. Thin: JSON to arguments, exceptions to status codes
+  outbound/      Postgres, Redis, the model, HTTP delegation
+libs/agent_core/ config, composition root, the classifier, SQL validation
+seeds/           schema, data, roles, history - a development deployment
+ui/              Streamlit console. A client, outside the hexagon
+docs/roadmap.md  what is built, what is next, and what each test kind is for
+docs/deferred.md decisions raised, understood, and deliberately put off
+```
+
+## Environment
+
+Nothing has a working-looking default. `PG_HOST`, `PG_USER`, `PG_PASSWORD`,
+`PG_DBNAME` and `QWEN_API_KEY` are required and checked at startup, together,
+so a first deployment names every missing variable at once rather than one
+restart at a time.
+
+`PG_USER` is the *authenticator* — one login for the whole service, holding no
+privileges of its own, that each pool turns into an agent with `SET ROLE`. It
+is `NOINHERIT`, which is what makes that a narrowing rather than a formality:
+before it becomes somebody it can read no agent's data at all.
+
+## Python environment
+
+```bash
+conda create -n multi-agents python=3.11
+conda activate multi-agents
+pip install -r requirements.txt
+```
