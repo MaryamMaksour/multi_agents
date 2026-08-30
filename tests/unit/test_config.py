@@ -1,0 +1,170 @@
+"""Configuration reading and its startup check.
+
+Two properties matter here. Importing must not raise, because a module that
+fails on import cannot be imported by a test and produces an error before
+there is any logging to report it through. And validate() must refuse to let
+a service start half-configured, since the failure mode it prevents - an
+unset host silently resolving somewhere unintended - is the kind that is
+noticed late and from the wrong direction.
+"""
+
+from __future__ import annotations
+
+import importlib
+
+import pytest
+
+from libs.agent_core import config as config_module
+
+FULL_ENV = {
+    "PG_DBNAME": "library_dev",
+    "PG_USER": "dev",
+    "PG_PASSWORD": "dev",
+    "PG_HOST": "localhost",
+    "QWEN_API_KEY": "test-key",
+}
+
+
+@pytest.fixture
+def config(monkeypatch):
+    """A freshly imported config module with a complete environment."""
+    for key, value in FULL_ENV.items():
+        monkeypatch.setenv(key, value)
+    return importlib.reload(config_module)
+
+
+@pytest.fixture(autouse=True)
+def _restore_module():
+    """Reload once more afterwards so a mutated module cannot leak into the
+    next test - these tests deliberately overwrite module-level values."""
+    yield
+    importlib.reload(config_module)
+
+
+# --------------------------------------------------------------------------
+# import safety
+# --------------------------------------------------------------------------
+
+
+def test_importing_with_an_empty_environment_does_not_raise(monkeypatch):
+    for key in FULL_ENV:
+        monkeypatch.delenv(key, raising=False)
+    importlib.reload(config_module)  # must not raise
+
+
+def test_importing_opens_no_connections(config):
+    """Nothing here should hold a pool, a client or a socket - building those
+    belongs in the composition root's lifespan.
+
+    Imported modules and __future__ flags are expected; anything else that is
+    neither a plain value nor a function is the kind of live object this file
+    must not create at import time.
+    """
+    import __future__
+    import inspect
+
+    suspicious = [
+        name for name, value in vars(config).items()
+        if not name.startswith("_")
+        and not isinstance(value, (str, int, float, bool, tuple, frozenset, type(None)))
+        and not callable(value)
+        and not inspect.ismodule(value)
+        and not isinstance(value, __future__._Feature)
+    ]
+    assert suspicious == [], f"config holds non-configuration objects: {suspicious}"
+
+
+# --------------------------------------------------------------------------
+# validate()
+# --------------------------------------------------------------------------
+
+
+def test_passes_with_a_complete_environment(config):
+    config.validate()
+
+
+def test_reports_every_missing_variable_at_once(config):
+    """Finding them one restart at a time is the small friction that makes a
+    first deployment take an hour."""
+    config.PG_HOST = ""
+    config.QWEN_API_KEY = ""
+    config.PG_PASSWORD = ""
+
+    with pytest.raises(RuntimeError) as excinfo:
+        config.validate()
+
+    message = str(excinfo.value)
+    for name in ("PG_HOST", "QWEN_API_KEY", "PG_PASSWORD"):
+        assert name in message
+
+
+@pytest.mark.parametrize("name", sorted(FULL_ENV))
+def test_each_required_variable_is_checked(config, name):
+    setattr(config, name, "")
+    with pytest.raises(RuntimeError, match=name):
+        config.validate()
+
+
+def test_secrets_have_no_working_default(monkeypatch):
+    """An unset password that falls back to a real one fails in the worst
+    possible way: silently, against the wrong system."""
+    for key in FULL_ENV:
+        monkeypatch.delenv(key, raising=False)
+    fresh = importlib.reload(config_module)
+
+    for name in ("PG_PASSWORD", "PG_HOST", "PG_DBNAME", "PG_USER", "QWEN_API_KEY"):
+        assert getattr(fresh, name) == "", f"{name} must not default to anything usable"
+
+
+# --------------------------------------------------------------------------
+# values that reach SQL
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("operator", ["<=>", "<->", "<#>"])
+def test_accepts_the_three_pgvector_operators(config, operator):
+    config.DIST_OP = operator
+    config.validate()
+
+
+@pytest.mark.parametrize("operator", ["; DROP TABLE books", "=", "", "<=> --", "OR 1=1"])
+def test_rejects_any_other_distance_operator(config, operator):
+    """DIST_OP is interpolated into SQL and cannot be parameterised, so the
+    allowlist is the only thing guarding it."""
+    config.DIST_OP = operator
+    with pytest.raises(RuntimeError, match="DIST_OP"):
+        config.validate()
+
+
+# --------------------------------------------------------------------------
+# defaults that carry meaning
+# --------------------------------------------------------------------------
+
+
+def test_context_sent_is_smaller_than_what_is_retained(config):
+    """They are separate on purpose: one bounds what is kept, the other what
+    is sent. Sending more than is kept would be incoherent."""
+    assert config.CONTEXT_MESSAGES_SENT <= config.MAX_SESSION_MESSAGES
+
+
+def test_context_window_can_hold_several_whole_turns(config):
+    """A turn spans user, tool call, tool result and final answer, so a small
+    slice would deliver turns cut in half."""
+    assert config.CONTEXT_MESSAGES_SENT >= 8
+
+
+def test_pagination_limit_is_set_and_bounded(config):
+    assert 1 <= config.MAX_PAGES_PER_TOOL <= 20
+
+
+def test_environment_overrides_a_default(monkeypatch):
+    monkeypatch.setenv("MAX_PAGES_PER_TOOL", "3")
+    assert importlib.reload(config_module).MAX_PAGES_PER_TOOL == 3
+
+
+def test_no_per_agent_urls_are_configured(config):
+    """Which agents exist is registry data. A *_AGENT_URL here would mean the
+    core knows its deployment's agents, which is what the registry exists to
+    prevent."""
+    leaked = [n for n in vars(config) if n.endswith("_AGENT_URL")]
+    assert leaked == []

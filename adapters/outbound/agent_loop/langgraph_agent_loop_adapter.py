@@ -110,26 +110,12 @@ class LangGraphAgentLoopAdapter:
         return tool_message, pagination_update
 
 
-async def _take_action(self, state: _GraphState) -> dict:
-    tool_calls_msgs = state["messages"][-1].tool_calls
-    pagination = dict(state.get("pagination", {}))
-    results = await asyncio.gather(*(self._invoke_one_tool(call, pagination) for call in tool_calls_msgs))
-
-    tool_messages = [tm for tm, _ in results]
-    for _, update in results:
-        if update:
-            key, value = update
-            pagination[key] = value
-
-    return {"messages": tool_messages, "pagination": pagination}
-
-
     async def _take_action(self, state: _GraphState) -> dict:
         tool_calls_msgs = state["messages"][-1].tool_calls
-        results = await asyncio.gather(*(self._invoke_one_tool(call) for call in tool_calls_msgs))
+        pagination = dict(state.get("pagination", {}))
+        results = await asyncio.gather(*(self._invoke_one_tool(call, pagination) for call in tool_calls_msgs))
 
         tool_messages = [tm for tm, _ in results]
-        pagination = dict(state.get("pagination", {}))
         for _, update in results:
             if update:
                 key, value = update
