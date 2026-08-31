@@ -55,18 +55,35 @@ class RunAgentTurn:
             # examples (question + reasoning trace) similar to this new question.
             memory_examples = await self.history.get_memory(query=user_input)
 
-            # Local variable only - never mutate self.system_prompt, since this
-            # instance is shared across every session and every request.
-            system_prompt = self.system_prompt + "\n\n" + "History: " + str(memory_examples)
-
             # Persist the incoming user message for audit + future memory lookups.
             await self.history.log_user_message(session_id=session_id, turn_id=turn_id, message=user_input)
 
-            # `messages` is what's actually sent to the LLM (system + prior window +
-            # this turn). `new_messages` mirrors it but excludes the system prompt -
-            # only this is what gets persisted back to the conversation window.
+            # `messages` is what's actually sent to the LLM. `new_messages`
+            # mirrors it but excludes the system prompt and the examples -
+            # both are rebuilt fresh every turn, so only the rest is persisted
+            # back to the conversation window.
+            #
+            # The order matters for cost, not only for the model. Providers
+            # cache by matching the *prefix* of a request, and the examples
+            # change on every turn - so concatenating them into the system
+            # prompt, as this did, moves the first difference to byte zero and
+            # nothing after it can ever be cached. The tool schemas alone are
+            # ~1,070 tokens resent on every call in the loop, which is most of
+            # the bill. System prompt first and unchanged, then the window
+            # (append-only within a session), then the volatile part last.
+            #
+            # It reads better too: worked examples belong next to the question
+            # they are examples for, not several thousand tokens above it.
             context_window = cache_data[-self.context_messages_sent:]
-            messages = [ChatMessage(role=Role.SYSTEM, content=system_prompt)] + context_window + [ChatMessage(role=Role.USER, content=user_input)]
+            messages = [ChatMessage(role=Role.SYSTEM, content=self.system_prompt)] + context_window
+
+            if memory_examples:
+                messages.append(ChatMessage(
+                    role=Role.SYSTEM,
+                    content="Worked examples from earlier turns: " + str(memory_examples),
+                ))
+
+            messages.append(ChatMessage(role=Role.USER, content=user_input))
             new_messages = [ChatMessage(role=Role.USER, content=user_input)]
 
             loop_result = await self.agent_loop.run(messages)

@@ -64,15 +64,51 @@ async def test_model_sees_system_prompt_then_window_then_user():
     assert sent[-1].content == "new question"
 
 
-async def test_memory_examples_are_added_to_the_system_prompt():
+async def test_memory_examples_reach_the_model():
     history = FakeHistory(memory=[{"q": "an earlier question", "a": "its answer"}])
     loop = FakeAgentLoop()
 
     await build(history=history, agent_loop=loop).run("s1", "t1", "hi")
 
-    system = loop.last_messages[0].content
-    assert system.startswith("BASE PROMPT")
-    assert "an earlier question" in system
+    assert any("an earlier question" in (m.content or "") for m in loop.last_messages)
+
+
+async def test_the_system_prompt_is_sent_unchanged():
+    """It is the first thing in every request and it must be byte-identical
+    every time. Providers cache by matching the prefix of a request, so
+    anything volatile mixed in here moves the first difference to byte zero
+    and nothing after it can be cached - including the tool schemas, which
+    are the largest fixed cost in the loop."""
+    history = FakeHistory(memory=[{"q": "an earlier question"}])
+    loop = FakeAgentLoop()
+
+    await build(history=history, agent_loop=loop).run("s1", "t1", "hi")
+
+    assert loop.last_messages[0].content == "BASE PROMPT"
+
+
+async def test_the_volatile_part_comes_after_the_stable_part():
+    """Examples last, next to the question they are examples for. Putting
+    them before the conversation window would make the window uncacheable
+    too, since a prefix is only reusable up to its first difference."""
+    history = FakeHistory(memory=[{"q": "an earlier question"}])
+    loop = FakeAgentLoop()
+
+    await build(history=history, agent_loop=loop).run("s1", "t1", "hi")
+
+    contents = [m.content or "" for m in loop.last_messages]
+    examples_at = next(i for i, c in enumerate(contents) if "an earlier question" in c)
+    assert examples_at > 0
+    assert contents[-1] == "hi"
+
+
+async def test_no_examples_means_no_extra_message():
+    """An empty memory must not add an empty block. It would still be a
+    difference in the prefix, which is the thing being avoided."""
+    loop = FakeAgentLoop()
+    await build(history=FakeHistory(memory=[]), agent_loop=loop).run("s1", "t1", "hi")
+
+    assert [m.content for m in loop.last_messages] == ["BASE PROMPT", "hi"]
 
 
 # --------------------------------------------------------------------------
@@ -276,9 +312,9 @@ async def test_system_prompt_is_never_mutated_across_turns():
     interactor.agent_loop = loop2
     await interactor.run("s1", "t2", "two")
 
-    system = loop2.last_messages[0].content
-    assert "second" in system
-    assert "first" not in system
+    sent = " ".join(m.content or "" for m in loop2.last_messages)
+    assert "second" in sent
+    assert "first" not in sent
 
 
 async def test_separate_sessions_keep_separate_windows():

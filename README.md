@@ -41,7 +41,18 @@ export QWEN_API_KEY=...
 docker compose -f deploy/docker-compose.yml up --build
 ```
 
-Then:
+Ask it something:
+
+```bash
+python3 scripts/first_question.py
+```
+
+That checks the orchestrator is up and routing before spending a token, asks
+three questions, and says where to read the token and cache numbers. A new
+DashScope International account gets 1M input and 1M output tokens free for
+90 days, which is roughly 190 questions - enough to prove the path works.
+
+Or by hand:
 
 ```bash
 curl localhost:8000/health          # the orchestrator, and who it routes to
@@ -127,6 +138,17 @@ workloads have opposite shapes: chat is few calls of many tokens, embeddings
 are many calls of few. That also makes the useful hybrid possible: embeddings
 local and free, where the call count is high, and a hosted model for
 generation, where quality matters most.
+
+#### Prompt caching
+
+Most providers cache by matching the *prefix* of a request, so the system
+prompt is sent byte-identical every turn and the volatile parts - the worked
+examples from history - go last, next to the question. That is not a
+micro-optimisation: the tool schemas alone are ~1,070 tokens resent on every
+call in the agent loop, and one question is seven calls. With DashScope's
+implicit cache it is about 39% of the bill.
+
+Nothing needs enabling; it is the message order that makes it possible.
 
 `EMBEDDING_DIM` must match the `vector(N)` columns. The seed uses 1024;
 changing it is a migration and a re-embedding of every row, not a restart.
