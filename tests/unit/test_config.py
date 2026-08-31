@@ -168,3 +168,47 @@ def test_no_per_agent_urls_are_configured(config):
     prevent."""
     leaked = [n for n in vars(config) if n.endswith("_AGENT_URL")]
     assert leaked == []
+
+
+# --------------------------------------------------------------------------
+# the embedding endpoint, split from the chat one
+# --------------------------------------------------------------------------
+
+
+def test_the_embedding_endpoint_defaults_to_the_chat_one(monkeypatch):
+    """A deployment using one endpoint for both sets nothing and nothing
+    changes. The split has to be free for the people who do not need it."""
+    monkeypatch.delenv("EMBED_API_URL", raising=False)
+    monkeypatch.delenv("EMBED_API_KEY", raising=False)
+    monkeypatch.setenv("QWEN_API_URL", "https://example.test/v1")
+    monkeypatch.setenv("QWEN_API_KEY", "chat-key")
+
+    config = importlib.reload(config_module)
+    assert config.EMBED_API_URL == "https://example.test/v1"
+    assert config.EMBED_API_KEY == "chat-key"
+
+
+def test_the_embedding_endpoint_can_point_somewhere_else(monkeypatch):
+    """The hybrid this exists for: embeddings local and free, where the call
+    count is high, and a hosted model for generation."""
+    monkeypatch.setenv("QWEN_API_URL", "https://hosted.test/v1")
+    monkeypatch.setenv("QWEN_API_KEY", "chat-key")
+    monkeypatch.setenv("EMBED_API_URL", "http://localhost:8001/v1")
+    monkeypatch.setenv("EMBED_API_KEY", "local")
+
+    config = importlib.reload(config_module)
+    assert config.EMBED_API_URL == "http://localhost:8001/v1"
+    assert config.QWEN_API_URL == "https://hosted.test/v1"
+
+
+def test_a_separate_endpoint_without_a_key_is_refused_at_startup(monkeypatch):
+    """A local server usually ignores the key, but the client still requires
+    one. Caught here rather than on the first question."""
+    for name, value in FULL_ENV.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("EMBED_API_URL", "http://localhost:8001/v1")
+
+    config = importlib.reload(config_module)
+    config.EMBED_API_KEY = ""
+    with pytest.raises(RuntimeError, match="EMBED_API_KEY"):
+        config.validate()

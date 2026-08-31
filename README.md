@@ -114,6 +114,25 @@ Nothing has a working-looking default. `PG_HOST`, `PG_USER`, `PG_PASSWORD`,
 so a first deployment names every missing variable at once rather than one
 restart at a time.
 
+### Where the model comes from
+
+`QWEN_API_URL` is the seam between the hosted and self-hosted editions. It is
+an OpenAI-compatible base URL, so a hosted API, a vLLM server in your own VPC,
+or a local Ollama are a configuration change and not a code change.
+
+Embeddings have their own pair, `EMBED_API_URL` and `EMBED_API_KEY`, which
+default to the chat endpoint when unset. They exist because a vLLM process
+serves one model, so self-hosting means two servers - and because the two
+workloads have opposite shapes: chat is few calls of many tokens, embeddings
+are many calls of few. That also makes the useful hybrid possible: embeddings
+local and free, where the call count is high, and a hosted model for
+generation, where quality matters most.
+
+`EMBEDDING_DIM` must match the `vector(N)` columns. The seed uses 1024;
+changing it is a migration and a re-embedding of every row, not a restart.
+
+### Postgres
+
 `PG_USER` is the *authenticator* — one login for the whole service, holding no
 privileges of its own, that each pool turns into an agent with `SET ROLE`. It
 is `NOINHERIT`, which is what makes that a narrowing rather than a formality:

@@ -34,6 +34,12 @@ x-agent-base: &agent-base
     QWEN_API_KEY: ${QWEN_API_KEY:?set QWEN_API_KEY in your shell or a .env file}
     QWEN_API_URL: ${QWEN_API_URL:-https://dashscope-intl.aliyuncs.com/compatible-mode/v1}
     QWEN_MODEL: ${QWEN_MODEL:-qwen3-14b}
+    QWEN_EMBED_MODEL: ${QWEN_EMBED_MODEL:-text-embedding-v3}
+    # Unset means "same endpoint as chat". Set them to run embeddings
+    # somewhere else - a second vLLM, or a local server - without touching
+    # where generation happens.
+    EMBED_API_URL: ${EMBED_API_URL:-}
+    EMBED_API_KEY: ${EMBED_API_KEY:-}
     DIST_OP: ${DIST_OP:-<=>}
   depends_on:
     postgres:

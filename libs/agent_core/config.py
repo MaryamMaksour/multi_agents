@@ -34,6 +34,21 @@ QWEN_MAX_TOKENS = int(os.getenv("QWEN_MAX_TOKENS", "32000"))
 
 QWEN_EMBED_MODEL = os.getenv("QWEN_EMBED_MODEL", "text-embedding-v3")
 
+# Embeddings can come from somewhere else entirely, and often have to.
+#
+# A vLLM process serves one model, so self-hosting means two servers - one
+# generating, one embedding - on different ports at least. And the two have
+# opposite shapes: chat is few calls of many tokens, embedding is many calls
+# of few, so they suit different hardware and different bills. Splitting them
+# also makes the sensible hybrid possible: embeddings local and free, where
+# the call count is high, and a hosted model for generation, where quality
+# matters most.
+#
+# Defaults to the chat endpoint, so a deployment using one endpoint for both
+# sets nothing and nothing changes.
+EMBED_API_URL = os.getenv("EMBED_API_URL", "") or QWEN_API_URL
+EMBED_API_KEY = os.getenv("EMBED_API_KEY", "") or QWEN_API_KEY
+
 # Fixed in the column type as vector(N), so changing it is a schema migration
 # and a re-embedding of every row, not a restart. Kept here so the value the
 # code sends and the value the columns accept come from one place.
@@ -122,6 +137,17 @@ def validate() -> None:
             + ", ".join(missing)
             + ". These have no safe default - an unset database host or password "
             "would otherwise fail by connecting somewhere unintended."
+        )
+
+    # Not in _REQUIRED: it defaults to QWEN_API_KEY, which is required, so a
+    # deployment sharing one endpoint can never reach here with it empty. It
+    # is only empty when someone set EMBED_API_URL and forgot the key - which
+    # would otherwise fail on the first question rather than at startup.
+    if not EMBED_API_KEY:
+        raise RuntimeError(
+            "EMBED_API_URL is set but EMBED_API_KEY is empty. A local server "
+            "usually ignores the key, but it still has to be present - pass any "
+            "non-empty value."
         )
 
     if DIST_OP not in ("<=>", "<->", "<#>"):

@@ -329,18 +329,32 @@ async def open_runtime(agent_key: str | None = None) -> Runtime:
     registry = FileAgentRegistryAdapter(config.AGENTS_REGISTRY_PATH)
 
     closers: list[Callable] = []
-    openai_client = AsyncOpenAI(api_key=config.QWEN_API_KEY, base_url=config.QWEN_API_URL)
-    closers.append(openai_client.close)
+    llm_client = AsyncOpenAI(api_key=config.QWEN_API_KEY, base_url=config.QWEN_API_URL)
+    closers.append(llm_client.close)
+
+    # One client when both point at the same endpoint, two when they do not.
+    # Building a second unconditionally would open a second connection pool
+    # to the same host for no reason; sharing one unconditionally would send
+    # the chat key to the embedding server.
+    if (config.EMBED_API_URL, config.EMBED_API_KEY) == (
+        config.QWEN_API_URL, config.QWEN_API_KEY
+    ):
+        embed_client = llm_client
+    else:
+        embed_client = AsyncOpenAI(
+            api_key=config.EMBED_API_KEY, base_url=config.EMBED_API_URL
+        )
+        closers.append(embed_client.close)
 
     redis_client = redis.from_url(config.REDIS_URL, decode_responses=False)
     closers.append(redis_client.aclose)
     cache = RedisCacheAdapter(redis_client)
 
-    embeddings = QwenEmbeddingAdapter(openai_client, config.QWEN_EMBED_MODEL)
+    embeddings = QwenEmbeddingAdapter(embed_client, config.QWEN_EMBED_MODEL)
 
     def llm_factory(tool_schemas):
         return QwenLLMAdapter(
-            client=openai_client, model=config.QWEN_MODEL,
+            client=llm_client, model=config.QWEN_MODEL,
             temperature=config.QWEN_TEMPERATURE, max_tokens=config.QWEN_MAX_TOKENS,
             tools=tool_schemas,
         )
