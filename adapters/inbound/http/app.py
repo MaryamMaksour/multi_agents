@@ -87,6 +87,25 @@ def create_app(open_runtime_fn=open_runtime) -> FastAPI:
         lifespan=lifespan,
     )
 
+    @app.exception_handler(DomainError)
+    async def _domain_error(request: Request, exc: DomainError):
+        """Answer with what actually failed, not "Internal Server Error".
+
+        FastAPI's default 500 body says nothing, which sends whoever is
+        debugging to `docker compose logs` for every failure - and on a
+        machine where the containers are not theirs, sometimes nowhere at
+        all. The traceback stays in the logs; the type and message come back
+        here, because in practice that pair is the whole diagnosis:
+        "CacheError: Extra data: line 1 column 9" named the bug exactly.
+
+        Scoped to DomainError, so this is only ever our own exceptions with
+        our own wording. An unexpected one still returns a bare 500 rather
+        than whatever a library happened to put in its message.
+        """
+        raise HTTPException(
+            status_code=500, detail=f"{type(exc).__name__}: {exc}"
+        )
+
     @app.exception_handler(SessionBusyError)
     async def _busy(request: Request, exc: SessionBusyError):
         # 409, not 500: the caller did nothing wrong and retrying is the

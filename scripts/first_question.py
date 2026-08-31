@@ -82,12 +82,32 @@ def ask(question: str, session: str) -> None:
     try:
         body = call("/ask", {"question": question, "session_id": session})
     except urllib.error.HTTPError as e:
-        detail = e.read().decode()[:400]
-        print(f"!  HTTP {e.code}: {detail}")
+        raw = e.read().decode()
+        try:
+            detail = json.loads(raw).get("detail", raw)
+        except json.JSONDecodeError:
+            detail = raw
+        print(f"!  HTTP {e.code}: {str(detail)[:500]}")
+        if e.code >= 500:
+            print("   full traceback:")
+            print("     docker compose -f deploy/docker-compose.yml logs --tail 60 orchestrator")
         # 401/403 is the key; 402 is the quota. Both are worth stopping on,
         # because every later question would fail the same way.
-        if e.code in (401, 402, 403):
-            sys.exit("Stopping: this is a credentials or quota problem, not a bug.")
+        if e.code in (401, 402, 403) or "401" in str(detail):
+            sys.exit(
+                "\nStopping: this is a credentials or quota problem, not a bug.\n"
+                "\nDid the key reach the container?\n"
+                "  docker compose -f deploy/docker-compose.yml exec orchestrator \\\n"
+                "      sh -c 'echo ${#QWEN_API_KEY}'\n"
+                "\nIs it a key for this region? DashScope keys are region-bound,\n"
+                "and a Beijing key on the Singapore endpoint returns exactly this.\n"
+                "  curl -s -o /dev/null -w '%{http_code}\\n' \\\n"
+                "      -H \"Authorization: Bearer $QWEN_API_KEY\" \\\n"
+                "      https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models\n"
+                "\nAfter fixing it, containers read the environment when they are\n"
+                "created, not per request:\n"
+                "  docker compose -f deploy/docker-compose.yml up -d --force-recreate"
+            )
         return
     elapsed = time.time() - started
 
