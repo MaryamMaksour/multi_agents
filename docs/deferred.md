@@ -223,6 +223,25 @@ honest console is one that shows drafts and says they are drafts.
 
 ---
 
+## The first real question, and what it found
+
+Run on 2026-08-31 against a real deployment with a real key. Three things
+came out of it, and only the third was about the model.
+
+**Two bugs in RedisCacheAdapter**, both fatal on the first question of every
+session, both invisible to every unit test. The lock and the session window
+shared a key namespace, so locking a session destroyed its window; and a
+missing session returned None where the interactor slices a list. Fixed, with
+`tests/integration/test_redis_cache_live.py` covering them against a real
+Redis - the fake in conftest.py could not have caught either, because a fake
+keeps its store and its locks in separate attributes and has no shared
+namespace to collide in.
+
+**The script reported `HTTP 500` and nothing else**, which sent the reader
+looking for the logs rather than telling them where to look.
+
+---
+
 ## A real question has never gone through a real model
 
 Every layer up to the model call runs against real Postgres and Redis in
