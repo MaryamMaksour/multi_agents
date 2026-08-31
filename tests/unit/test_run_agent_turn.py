@@ -17,7 +17,7 @@ import pytest
 
 from domain.entities.agent_turn import AgentTurnResult, PaginationState
 from domain.entities.chat_message import ChatMessage, Role
-from domain.exceptions import SessionBusyError
+from domain.exceptions import HistoryError, SessionBusyError
 from domain.interactors.run_agent_turn import RunAgentTurn
 
 from tests.conftest import FakeAgentLoop, FakeCache, FakeHistory, window
@@ -326,3 +326,97 @@ async def test_separate_sessions_keep_separate_windows():
 
     assert [m.content for m in cache.store["sa"]] == ["question a", "answer"]
     assert [m.content for m in cache.store["sb"]] == ["question b", "answer"]
+
+
+# --------------------------------------------------------------------------
+# history is an optimisation, not a dependency
+#
+# All three of these were 500s in production before they were tests. The
+# embedding model the account could not reach took down every question,
+# including the ones that needed no memory at all - because the memory
+# lookup is the first thing a turn does.
+# --------------------------------------------------------------------------
+
+
+class BrokenHistory(FakeHistory):
+    """A HistoryPort where the chosen calls raise, as a real one does when
+    the embedding endpoint refuses it."""
+
+    def __init__(self, *, failing: set[str], **kw):
+        super().__init__(**kw)
+        self.failing = failing
+
+    async def get_memory(self, query):
+        if "get_memory" in self.failing:
+            raise HistoryError("embedding endpoint said AccessDenied")
+        return await super().get_memory(query)
+
+    async def log_user_message(self, session_id, turn_id, message):
+        if "log_user_message" in self.failing:
+            raise HistoryError("embedding endpoint said AccessDenied")
+        return await super().log_user_message(session_id, turn_id, message)
+
+    async def log_assistant_final(self, session_id, turn_id, final_answer, elapsed):
+        if "log_assistant_final" in self.failing:
+            raise HistoryError("write failed")
+        return await super().log_assistant_final(session_id, turn_id, final_answer, elapsed)
+
+
+async def test_a_failed_memory_lookup_still_answers():
+    """The turn goes ahead with no worked examples. Quality degrades; the
+    answer arrives."""
+    interactor = build(history=BrokenHistory(failing={"get_memory"}))
+    result = await interactor.run("s1", "t1", "how many books?")
+
+    assert [m.content for m in result.messages][-1] == "answer"
+
+
+async def test_a_failed_memory_lookup_sends_a_clean_prompt():
+    """No examples rather than a broken block - and the system message is
+    still byte-identical, so the prefix stays cacheable."""
+    loop = FakeAgentLoop()
+    await build(history=BrokenHistory(failing={"get_memory"}), agent_loop=loop).run(
+        "s1", "t1", "hi"
+    )
+
+    assert [m.content for m in loop.last_messages] == ["BASE PROMPT", "hi"]
+
+
+async def test_a_failed_audit_write_still_answers():
+    """Losing an audit row is bad. Losing the user's answer because an audit
+    row could not be written is worse."""
+    interactor = build(history=BrokenHistory(failing={"log_user_message"}))
+    result = await interactor.run("s1", "t1", "how many books?")
+
+    assert [m.content for m in result.messages][-1] == "answer"
+
+
+async def test_a_failed_final_write_still_answers():
+    interactor = build(history=BrokenHistory(failing={"log_assistant_final"}))
+    result = await interactor.run("s1", "t1", "how many books?")
+
+    assert [m.content for m in result.messages][-1] == "answer"
+
+
+async def test_the_lock_is_still_released_when_history_fails():
+    """The finally covers it, but a lock leaked on a failing dependency
+    would wedge that session until the timeout."""
+    cache = FakeCache()
+    interactor = build(cache=cache, history=BrokenHistory(failing={"get_memory"}))
+    await interactor.run("s1", "t1", "hi")
+
+    assert cache.names().count("release_lock") == 1
+
+
+async def test_history_failures_are_logged_not_swallowed(caplog):
+    """A history that has stopped recording should be visible, not merely
+    absent."""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        await build(history=BrokenHistory(failing={"get_memory", "log_user_message"})).run(
+            "s1", "t1", "hi"
+        )
+
+    assert any("memory lookup failed" in r.message for r in caplog.records)
+    assert any("audit trail" in r.message for r in caplog.records)

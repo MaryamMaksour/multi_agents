@@ -1,6 +1,7 @@
 # domain/interactors/run_agent_turn.py
 from __future__ import annotations
 
+import logging
 import time
 
 from domain.ports.agent_loop_port import AgentLoopPort
@@ -10,7 +11,9 @@ from domain.ports.cache_port import CachePort
 from domain.entities.agent_turn import AgentTurnResult
 from domain.entities.chat_message import ChatMessage, Role
 
-from domain.exceptions import SessionBusyError
+from domain.exceptions import HistoryError, SessionBusyError
+
+logger = logging.getLogger(__name__)
 
 
 class RunAgentTurn:
@@ -52,11 +55,42 @@ class RunAgentTurn:
                 cache_data = await self.cache.get(key=session_id)
 
             # Semantic search over past turns: enrich the prompt with worked
-            # examples (question + reasoning trace) similar to this new question.
-            memory_examples = await self.history.get_memory(query=user_input)
+            # examples (question + reasoning trace) similar to this new
+            # question.
+            #
+            # An optimisation, and treated as one. It costs an embedding call
+            # and a vector search, and when either fails the right answer is
+            # a turn with no examples - not a lost answer. The same rule the
+            # ENUM probe follows at startup: degrade quality, never raise.
+            #
+            # This matters more than it looks. The examples are the *first*
+            # thing a turn does, so without this an embedding model the
+            # account cannot reach takes down every question, including the
+            # ones that need no memory at all.
+            try:
+                memory_examples = await self.history.get_memory(query=user_input)
+            except HistoryError:
+                logger.warning(
+                    "No worked examples this turn - the memory lookup failed. "
+                    "The answer is unaffected; the prompt is thinner.",
+                    exc_info=True,
+                )
+                memory_examples = []
 
-            # Persist the incoming user message for audit + future memory lookups.
-            await self.history.log_user_message(session_id=session_id, turn_id=turn_id, message=user_input)
+            # Persist the incoming user message for audit + future memory
+            # lookups. Also non-fatal, and for a narrower reason: losing an
+            # audit row is bad, losing the user's answer because an audit row
+            # could not be written is worse. It is logged loudly rather than
+            # swallowed, so a history that has stopped recording is visible
+            # instead of merely absent.
+            try:
+                await self.history.log_user_message(session_id=session_id, turn_id=turn_id, message=user_input)
+            except HistoryError:
+                logger.error(
+                    "History not recorded for turn %s - this turn will be "
+                    "answered but will not appear in the audit trail.",
+                    turn_id, exc_info=True,
+                )
 
             # `messages` is what's actually sent to the LLM. `new_messages`
             # mirrors it but excludes the system prompt and the examples -
@@ -102,7 +136,12 @@ class RunAgentTurn:
             # what get_memory() later returns as a worked example, and what marks
             # this turn valid/invalid based on whether an error shows up in it.
             elapsed = time.time() - started_at
-            await self.history.log_assistant_final(session_id=session_id, turn_id=turn_id, final_answer=new_messages, elapsed=elapsed)
+            try:
+                await self.history.log_assistant_final(session_id=session_id, turn_id=turn_id, final_answer=new_messages, elapsed=elapsed)
+            except HistoryError:
+                logger.error(
+                    "Final answer not recorded for turn %s.", turn_id, exc_info=True,
+                )
 
             return AgentTurnResult(messages=messages, pagination=pagination)
 

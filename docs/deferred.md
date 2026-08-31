@@ -144,7 +144,14 @@ error is invalid), or dropping the distinction. Picking one without knowing
 which is worse than leaving it visible.
 
 **Cheap thing to do first, whichever wins:** stop paying for the embedding
-when the query cannot match anything.
+when the query cannot match anything. It is still one embedding call per turn
+for a query that returns nothing.
+
+**Related, and already done:** a failed memory lookup no longer takes the turn
+down with it. It used to - an embedding model the account could not reach
+returned AccessDenied, and because the memory lookup is the first thing a turn
+does, every question failed with a 500 including the ones needing no memory at
+all.
 
 ---
 
