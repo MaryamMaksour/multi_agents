@@ -3,10 +3,8 @@ import json
 
 import redis.asyncio as redis
 
-from dataclasses import asdict
-
 from domain.exceptions import CacheError
-from domain.entities.chat_message import ChatMessage, Role, ToolCall
+from domain.entities.chat_message import ChatMessage, from_plain, to_plain
 
 # Values and locks live in separate key namespaces, and they have to.
 #
@@ -19,6 +17,32 @@ from domain.entities.chat_message import ChatMessage, Role, ToolCall
 # with "Extra data: line 1 column 9", which names neither locks nor sessions.
 VALUE_PREFIX = "session:"
 LOCK_PREFIX = "lock:"
+
+# What a stored payload is, written next to it.
+#
+# CachePort carries two different shapes: a conversation window, which is a
+# list of ChatMessage, and an embedding token's vector, which is a list of
+# floats. This adapter used to assume the first - `asdict(msg)` over whatever
+# it was given - so embed_query_tool could not store a vector at all:
+#
+#     CacheError: asdict() should be called on dataclass instances
+#
+# which named neither vectors nor the tool that was storing one. Sniffing the
+# shape on the way out would work and would be guesswork; a tag written on the
+# way in is one field and says what the value is.
+MESSAGES = "messages"
+VALUE = "value"
+
+
+def _is_message_window(value: Any) -> bool:
+    """Whether this is a conversation window rather than a plain value.
+
+    Checked on the way in, where the caller's type is still visible, rather
+    than sniffed on the way out. An empty list is not a window: there is
+    nothing to convert either way, and calling it one would mean a stored
+    empty vector came back as an empty message list.
+    """
+    return bool(value) and all(isinstance(item, ChatMessage) for item in value)
 
 
 class RedisCacheAdapter:
@@ -43,18 +67,12 @@ class RedisCacheAdapter:
             if value is None:
                 return []
 
-            new_messages = json.loads(value)
+            stored = json.loads(value)
 
-            return [
-                 ChatMessage(
-                      role=Role(msg["role"]),
-                      content=msg.get("content"),
-                      tool_calls=[ToolCall(**tc) for tc in msg["tool_calls"]] if msg.get("tool_calls") else None,
-                      tool_call_id= msg.get("tool_call_id"),
-                      name = msg.get("name")
-                 ) 
-                 for msg in new_messages
-            ]
+            if stored.get("kind") != MESSAGES:
+                return stored["data"]
+
+            return [from_plain(msg) for msg in stored["data"]]
 
         except Exception as e:
            raise CacheError(f"error {e} while getting cache for key: {key}") from e
@@ -67,13 +85,15 @@ class RedisCacheAdapter:
             """
 
             try:
-                  serializable = [
-                        {**asdict(msg), "role": msg.role.value} for msg in value
-                  ] # convert ChatMessage list to JSON-serializable dicts.
+                  if _is_message_window(value):
+                        payload = {"kind": MESSAGES,
+                                   "data": [to_plain(msg) for msg in value]}
+                  else:
+                        # A vector, or anything else JSON can carry. Stored
+                        # as it is and handed back as it is.
+                        payload = {"kind": VALUE, "data": value}
 
-                  _value = json.dumps(serializable)
-
-                  await self._redis.set(VALUE_PREFIX + key, _value, ex=ttl)
+                  await self._redis.set(VALUE_PREFIX + key, json.dumps(payload), ex=ttl)
 
             except Exception as e:
                   raise CacheError(f"error {e} while set on cache  key: {key} ") from e

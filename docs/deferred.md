@@ -230,6 +230,43 @@ honest console is one that shows drafts and says they are drafts.
 
 ---
 
+## An empty embedding column is classified SEMANTIC, and answers wrongly
+
+**The worst-shaped bug found so far**, because it produces a confident wrong
+answer rather than an error.
+
+`classify_column` calls a column SEMANTIC when an `embed_<name>` partner
+*exists*. It does not ask whether that column contains anything. On a
+database where the columns have been created but not backfilled - which is
+every database before the backfill runs, including `seeds/` today, where
+`002_generate_data.py` fills 420 books and zero embeddings - the guidance
+tells the model the column is searchable by meaning.
+
+Then this happens, and it is correct pgvector behaviour rather than a bug in
+it. `seeds/001_schema.sql` builds an index on each embed_ column, and a
+pgvector index does not index NULL rows, so Postgres plans an index scan for
+`ORDER BY col <=> $1` and the unembedded rows are simply absent:
+
+```
+Index Scan using idx_books_embed_summary on books
+```
+
+Zero rows. No error, no warning. The model reports "there are no books about
+the sea" when the truth is "nothing has been embedded". Pinned by
+`test_ordering_by_distance_on_an_unembedded_table_returns_nothing`.
+
+**The fix, and it is small:** one `count(embed_col)` per embedding column at
+startup - the same shape as the distinct-count probe already there - and a
+column whose partner is empty classifies as TEXT or ENUM instead. The
+guidance then offers exact matching, which works, rather than semantic
+search, which silently cannot.
+
+**Comes back with** the backfill, because the two are the same feature seen
+from either end: one fills the columns, this one is honest about them until
+it has.
+
+---
+
 ## The first real question, and what it found
 
 Run on 2026-08-31 against a real deployment with a real key. Three things
@@ -245,7 +282,23 @@ keeps its store and its locks in separate attributes and has no shared
 namespace to collide in.
 
 **The script reported `HTTP 500` and nothing else**, which sent the reader
-looking for the logs rather than telling them where to look.
+looking for the logs rather than telling them where to look. DomainError now
+comes back in the response body.
+
+**Three more bugs, all on the vector path**, found afterwards by running the
+whole loop against a scripted model rather than a real one:
+
+- the cache could only hold ChatMessages, so `embed_query_tool` could not
+  store a vector at all
+- asyncpg has no codec for pgvector's type, so every vector reached it as
+  "expected str, got list"
+- `log_assistant_final` json.dumps'd ChatMessage entities, so every
+  successful turn failed to record its own answer
+
+None was reachable from a unit test, and each is one HTTP call deep. That gap
+is now covered by `tests/integration/test_agent_loop_live.py`, which drives
+the real system against `tests/fakes/scripted_model.py` - an
+OpenAI-compatible endpoint that replies from a script and decides nothing.
 
 ---
 

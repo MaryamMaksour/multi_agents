@@ -4,6 +4,7 @@ from domain.ports.cache_port import CachePort
 
 
 from domain.exceptions import UnknownToolError, ToolExecutionError
+from libs.agent_core.pgvector import to_vector_literal
 from libs.agent_core.sql_validation import validate_identifier, validate_readonly_query
 
 
@@ -403,13 +404,17 @@ class SqlToolAdapter():
         resolved_params = []
         for p in params:
             if isinstance(p, str) and p.startswith("vec_"):
-                p = await self._cache.get(p)
+                # The cache holds the embedding as a list of floats; Postgres
+                # needs pgvector's text form. Converted here rather than at
+                # storage time so the cached value stays a vector rather than
+                # a Postgres-shaped string.
+                p = to_vector_literal(await self._cache.get(p))
             resolved_params.append(p)
 
         resolved_count_params = []
         for p in count_params:
             if isinstance(p, str) and p.startswith("vec_"):
-                p = await self._cache.get(p)
+                p = to_vector_literal(await self._cache.get(p))
             resolved_count_params.append(p)
 
         data = await self._db.fetch(query, *resolved_params)
@@ -439,7 +444,7 @@ class SqlToolAdapter():
             return {"error": f"Unknown table: {table_name}. use one of {sorted(self._allowed_tables)}"}
 
         mx = max(3, min(int(mx), 6))
-        vec = await self._embeddings.embed(query)
+        vec = to_vector_literal(await self._embeddings.embed(query))
 
         sql = f"""
             SELECT row_txt

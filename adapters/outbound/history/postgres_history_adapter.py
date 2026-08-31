@@ -5,9 +5,23 @@ import re
 
 from domain.ports.database_port import DatabasePort
 from domain.ports.embedding_port import EmbeddingPort
+from domain.entities.chat_message import ChatMessage, to_plain
 from domain.exceptions import HistoryError
+from libs.agent_core.pgvector import to_vector_literal
 
 _VALID_TABLE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _as_json(payload: Any) -> str:
+    """Encode a payload that may contain ChatMessages.
+
+    log_assistant_final is handed the turn's messages, which are entities and
+    not JSON. Every successful turn used to fail to record its own answer for
+    exactly this reason - non-fatally now, which means silently.
+    """
+    if isinstance(payload, list) and all(isinstance(m, ChatMessage) for m in payload):
+        return json.dumps([to_plain(m) for m in payload], ensure_ascii=False)
+    return json.dumps(payload, ensure_ascii=False)
 
 
 class PostgresHistoryAdapter:
@@ -59,7 +73,7 @@ class PostgresHistoryAdapter:
                 (session_id, turn_id, event_type, payload, user_message_embed)
                 VALUES ($1, $2, 'user', $3::jsonb, $4::vector)
             """
-            await self._db.execute(sql, session_id, turn_id, json.dumps(message), embed)
+            await self._db.execute(sql, session_id, turn_id, json.dumps(message), to_vector_literal(embed))
         except Exception as e:
             raise HistoryError(f"Error {e} while logging user message to {self._table}") from e
 
@@ -75,7 +89,7 @@ class PostgresHistoryAdapter:
                 (session_id, turn_id, event_type, payload, time)
                 VALUES ($1, $2, 'assistant_final', $3::jsonb, $4)
             """
-            await self._db.execute(sql, session_id, turn_id, json.dumps(final_answer), elapsed)
+            await self._db.execute(sql, session_id, turn_id, _as_json(final_answer), elapsed)
         except Exception as e:
             raise HistoryError(f"Error {e} while logging assistant final answer to {self._table}") from e
 
@@ -129,7 +143,7 @@ class PostgresHistoryAdapter:
             HistoryError: if the history call fails.
         """
         try:
-            vec = await self._embeddings.embed(query)
+            vec = to_vector_literal(await self._embeddings.embed(query))
 
             good_sql = f"""
                 SELECT * FROM (

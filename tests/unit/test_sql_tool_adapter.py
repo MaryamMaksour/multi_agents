@@ -305,7 +305,11 @@ async def test_a_vector_token_is_resolved_to_its_vector_at_query_time():
     ))
 
     _, sent_params = db.queries[0]
-    assert sent_params[0] == [0.1] * 8, "the token should have been swapped for the vector"
+    # pgvector's text form, not a Python list: asyncpg has no codec for the
+    # vector type, and a list reaches it as "expected str, got list".
+    assert sent_params[0] == "[" + ",".join(["0.1"] * 8) + "]", (
+        "the token should have been swapped for the vector"
+    )
 
 
 async def test_tokens_in_the_count_query_are_resolved_too():
@@ -322,7 +326,7 @@ async def test_tokens_in_the_count_query_are_resolved_too():
     ))
 
     _, count_params = db.queries[1]
-    assert count_params[0] == [0.1] * 8
+    assert count_params[0] == "[" + ",".join(["0.1"] * 8) + "]"
 
 
 # --------------------------------------------------------------------------
