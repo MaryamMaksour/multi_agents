@@ -131,6 +131,25 @@ restart at a time.
 an OpenAI-compatible base URL, so a hosted API, a vLLM server in your own VPC,
 or a local Ollama are a configuration change and not a code change.
 
+**DashScope keys are region-bound**, and this is worth knowing before it costs
+you an afternoon. A key made in the Beijing console returns
+`401 Incorrect API key provided` on the Singapore endpoint and vice versa -
+the message says the key is wrong when it is the region that is. The default
+here is Singapore; Beijing is `https://dashscope.aliyuncs.com/compatible-mode/v1`
+and is substantially cheaper for the same models. To find out which one a key
+belongs to:
+
+```bash
+for host in dashscope-intl.aliyuncs.com dashscope.aliyuncs.com; do
+  curl -s -o /dev/null -w "$host %{http_code}\n" \
+    -H "Authorization: Bearer $QWEN_API_KEY" \
+    "https://$host/compatible-mode/v1/models"
+done
+```
+
+Containers read the environment when they are created, so a corrected key
+needs `docker compose up -d --force-recreate`, not a restart.
+
 Embeddings have their own pair, `EMBED_API_URL` and `EMBED_API_KEY`, which
 default to the chat endpoint when unset. They exist because a vLLM process
 serves one model, so self-hosting means two servers - and because the two

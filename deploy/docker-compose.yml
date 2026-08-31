@@ -32,6 +32,10 @@ x-agent-base: &agent-base
     REDIS_URL: redis://redis:6379/1
     AGENTS_REGISTRY_PATH: seeds/agents.example.json
     QWEN_API_KEY: ${QWEN_API_KEY:?set QWEN_API_KEY in your shell or a .env file}
+    # DashScope keys are region-bound: a Beijing key on this endpoint returns
+    # "401 Incorrect API key provided", which blames the key rather than the
+    # region. Beijing is https://dashscope.aliyuncs.com/compatible-mode/v1
+    # and is substantially cheaper for the same models.
     QWEN_API_URL: ${QWEN_API_URL:-https://dashscope-intl.aliyuncs.com/compatible-mode/v1}
     QWEN_MODEL: ${QWEN_MODEL:-qwen3-14b}
     QWEN_EMBED_MODEL: ${QWEN_EMBED_MODEL:-text-embedding-v3}
