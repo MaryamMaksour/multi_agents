@@ -36,10 +36,17 @@ python3 seeds/002_generate_data.py | $DB
 $DB < seeds/003_roles.sql
 $DB < seeds/004_history.sql
 
-# 3. The system: one container per agent, plus the orchestrator
-export QWEN_API_KEY=...
+# 3. Configure, once, in a file
+cp deploy/.env.example deploy/.env      # then fill in QWEN_API_KEY
 docker compose -f deploy/docker-compose.yml up --build
 ```
+
+Compose reads `deploy/.env` automatically. A file rather than `export`
+because a container reads its environment once, when it is created - so an
+export in one terminal and a `docker compose up` in another produce a
+container configured from neither, which looks exactly like a wrong key and
+is not one. `docker compose -f deploy/docker-compose.yml config` prints what
+the containers will actually get.
 
 Ask it something:
 
