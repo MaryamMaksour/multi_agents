@@ -172,7 +172,18 @@ Containers read the environment when they are created, so a corrected key
 needs `docker compose up -d --force-recreate`, not a restart.
 
 Embeddings have their own pair, `EMBED_API_URL` and `EMBED_API_KEY`, which
-default to the chat endpoint when unset. They exist because a vLLM process
+default to the chat endpoint when unset. Anything OpenAI-compatible works on
+either side and they need not be the same provider - Cohere's compatibility
+endpoint, for instance, serves embeddings under the same shape:
+
+```bash
+export EMBED_API_URL=https://api.cohere.ai/compatibility/v1
+export QWEN_EMBED_MODEL=embed-multilingual-v3.0    # 1024 dimensions
+```
+
+`scripts/check_model.py --embedding <model>` reports the width it returns, so
+a mismatch is caught before it becomes a Postgres error mid-question.
+ They exist because a vLLM process
 serves one model, so self-hosting means two servers - and because the two
 workloads have opposite shapes: chat is few calls of many tokens, embeddings
 are many calls of few. That also makes the useful hybrid possible: embeddings

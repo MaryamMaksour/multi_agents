@@ -86,9 +86,60 @@ def ask(model: str) -> tuple[str, str]:
     return "no tools", (message.get("content") or "")[:80].replace("\n", " ")
 
 
+EMBED_URL = os.getenv("EMBED_API_URL", "") or BASE_URL
+EMBED_KEY = os.getenv("EMBED_API_KEY", "") or API_KEY
+EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "1024"))
+
+
+def check_embedding(model: str) -> None:
+    """Whether the embedding endpoint answers, and with how many dimensions.
+
+    The dimension is the part worth checking rather than assuming. It is
+    fixed in the schema as `vector(N)`, so a model that returns a different
+    width is a migration and a re-embedding of every row - not a restart -
+    and the failure otherwise arrives as a Postgres error in the middle of
+    someone's question.
+    """
+    body = json.dumps({"model": model, "input": "a short sentence to embed"}).encode()
+    request = urllib.request.Request(
+        f"{EMBED_URL.rstrip('/')}/embeddings", data=body,
+        headers={"content-type": "application/json",
+                 "authorization": f"Bearer {EMBED_KEY}"},
+    )
+    print(f"\nembeddings: {EMBED_URL}")
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            payload = json.loads(response.read())
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode()
+        try:
+            detail = json.loads(raw)["error"]["message"]
+        except Exception:
+            detail = raw[:140]
+        print(f"  {model:<28}no access    {e.code} {detail[:80]}")
+        return
+    except urllib.error.URLError as e:
+        print(f"  {model:<28}unreachable  {str(e)[:80]}")
+        return
+
+    dimensions = len(payload["data"][0]["embedding"])
+    if dimensions == EMBEDDING_DIM:
+        print(f"  {model:<28}OK           {dimensions} dimensions")
+    else:
+        print(
+            f"  {model:<28}WRONG WIDTH  {dimensions} dimensions, "
+            f"schema expects {EMBEDDING_DIM}\n"
+            f"  {'':<28}             this is a migration and a re-embedding "
+            "of every row,\n"
+            f"  {'':<28}             not a change of variable"
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("models", nargs="*", default=None)
+    parser.add_argument("--embedding", metavar="MODEL",
+                        help="also check an embedding model, and its width")
     args = parser.parse_args()
 
     if not API_KEY:
@@ -105,6 +156,9 @@ def main() -> None:
         if verdict == "TOOLS OK":
             usable.append(model)
         print(f"{model:<{width}}{verdict:<13}{detail}")
+
+    if args.embedding:
+        check_embedding(args.embedding)
 
     print()
     if usable:
