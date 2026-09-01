@@ -39,6 +39,15 @@ class ColumnSchema:
     is_vector: bool = False
     nullable: bool = True
 
+    # The column this one points at, as `table(column)`, or None.
+    #
+    # Discovered, like everything else here, and worth discovering: without
+    # it a model given `author_id integer` and asked which authors have more
+    # than three books has no way to know that column joins to `authors`. In
+    # practice one invented a pair of tables that do not exist and then said
+    # the question could not be answered.
+    references: str | None = None
+
 
 @dataclass(frozen=True)
 class TableSchema:

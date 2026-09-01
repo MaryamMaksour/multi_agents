@@ -14,6 +14,44 @@ answered at all.
 
 from __future__ import annotations
 
+SUB_AGENT_METHOD = """\
+How to work
+- Call the schema tool first, for every table you might need. Read what it
+  returns: a line like `status text  -- one of: open, closed` is telling you \
+which questions that column can answer, and `owner_id integer  -- joins to \
+people(id)` is telling you how to reach the other table. Both are read from \
+the database, so they are true.
+- Then call the filter tool for the columns you are going to use. It tells \
+you the retrieval strategy for each one, so you never have to guess whether \
+a column takes an exact match, a range, or a vector distance.
+- Use only the tables and columns those two tools showed you. If the data \
+you need is not there, say so - do not name a table you have not seen.
+
+Turning a question into a query
+- If the question names a category, a type, a status, a language or a \
+format, look for a column whose schema line lists it, and filter on it. \
+Leaving it out returns a larger number that answers a different question and \
+looks correct.
+- If the question asks "how many", "which are the most", or "are there any", \
+aggregate in SQL - count, sum, group by, having. Do not fetch rows and count \
+them yourself; the page limit will make that answer wrong.
+- If the question spans two tables, join them on the relationship the schema \
+declared.
+- Answer in the language the question was asked in.
+
+The shape of a good first query, with names from your own schema:
+
+    SELECT <what was asked for>
+    FROM <table from the schema tool>
+    WHERE <column> = <a value the schema listed>
+      AND <numeric column> < <number from the question>
+    LIMIT $1 OFFSET $2
+
+The names above are placeholders. Never send a query containing them, and \
+never invent a table name that the schema tool did not return.
+"""
+
+
 ORCHESTRATOR_PROMPT = """\
 You answer a user's questions by delegating to specialist agents. You have no \
 database access of your own: everything factual you say must come from an \
@@ -58,6 +96,28 @@ involved, so the user can tell what is grounded in what.
 - If an agent returns an error, say what failed rather than working around it \
 silently.
 """
+
+
+def sub_agent_prompt(spec) -> str:
+    """The method, then the deployment's own prompt.
+
+    Two halves with different owners. How to drive these tools is system
+    behaviour and belongs in code; what this agent knows about is written by
+    whoever registered it. Splitting them means a person adding an agent
+    writes a paragraph about their data, not a tutorial on tool use they
+    would have to keep in step with the tools.
+
+    Shared half first, and that ordering is worth a sentence. Every sub-agent
+    is given the same tool schemas and now the same method, so those bytes
+    are identical across agents - and a provider that caches by prefix can
+    reuse them between agents, not only between calls to one.
+
+    This also stands in for the worked examples that get_memory is supposed
+    to supply. It cannot supply any yet: nothing writes the column it filters
+    on, and a new deployment has no history regardless. An agent should not
+    be at its worst on the first question anybody asks it.
+    """
+    return f"{SUB_AGENT_METHOD}\n\n{spec.system_prompt}"
 
 
 def describe_agent(spec) -> str:

@@ -76,6 +76,8 @@ class PostgresIntrospectionAdapter:
             wanted,
         )
 
+        references = await self._foreign_keys(wanted)
+
         grouped: dict[str, list[ColumnSchema]] = {}
         for row in rows:
             grouped.setdefault(row["table_name"], []).append(
@@ -91,12 +93,79 @@ class PostgresIntrospectionAdapter:
                     ),
                     is_vector=row["udt_name"] == _VECTOR_UDT,
                     nullable=row["is_nullable"] == "YES",
+                    references=references.get(
+                        (row["table_name"], row["column_name"])
+                    ),
                 )
             )
 
         return {
             name: TableSchema(name=name, columns=tuple(columns))
             for name, columns in grouped.items()
+        }
+
+    async def _foreign_keys(self, tables: list[str]) -> dict[tuple[str, str], str]:
+        """Which columns point at which, as {(table, column): "other(id)"}.
+
+        Read from pg_catalog rather than information_schema, and that choice
+        needs its reason recorded, because the obvious one is wrong in both
+        directions.
+
+        `information_schema.constraint_column_usage` shows only columns in
+        tables *owned by* an enabled role. An agent role owns nothing - it
+        holds SELECT and no more - so it sees no foreign keys at all, and the
+        model is left to guess how `author_id` relates to `authors`. One
+        guessed a pair of tables that do not exist.
+
+        `pg_constraint` shows every constraint in the database to every role,
+        which would leak the shape of tables an agent cannot read. That is a
+        smaller leak than the data, and still not one to add to a design whose
+        whole claim is that introspection is bounded by privilege.
+
+        So: pg_catalog for visibility, and has_table_privilege on *both* ends
+        to put the bound back. A join is reported only when the role can read
+        the table it starts from and the table it arrives at - which is also
+        the only case where knowing about it is any use.
+        """
+        if not tables:
+            return {}
+
+        rows = await self._db.fetch(
+            """
+            SELECT
+                source_table.relname  AS from_table,
+                source_column.attname AS from_column,
+                target_table.relname  AS to_table,
+                target_column.attname AS to_column
+            FROM pg_constraint AS fk
+            JOIN pg_class     AS source_table ON source_table.oid = fk.conrelid
+            JOIN pg_namespace AS ns           ON ns.oid = source_table.relnamespace
+            JOIN pg_class     AS target_table ON target_table.oid = fk.confrelid
+            JOIN pg_attribute AS source_column
+              ON source_column.attrelid = fk.conrelid
+             AND source_column.attnum = fk.conkey[1]
+            JOIN pg_attribute AS target_column
+              ON target_column.attrelid = fk.confrelid
+             AND target_column.attnum = fk.confkey[1]
+            WHERE fk.contype = 'f'
+              AND ns.nspname = $1
+              AND source_table.relname = ANY($2::text[])
+              -- The bound. Without these two, this reports joins into tables
+              -- the role cannot read.
+              AND has_table_privilege(fk.conrelid, 'SELECT')
+              AND has_table_privilege(fk.confrelid, 'SELECT')
+              -- Single-column keys only. A composite key rendered as one
+              -- column would be a join that does not work, and saying
+              -- nothing is better than that.
+              AND array_length(fk.conkey, 1) = 1
+            """,
+            self._schema,
+            tables,
+        )
+        return {
+            (row["from_table"], row["from_column"]):
+                f'{row["to_table"]}({row["to_column"]})'
+            for row in rows
         }
 
     async def distinct_count(self, table: str, column: str) -> int:

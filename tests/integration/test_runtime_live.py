@@ -125,7 +125,9 @@ async def test_a_sub_agent_keeps_no_conversation_history(environment):
     runtime = await runtime_for(environment, "catalog")
     try:
         assert runtime.turn.use_conversation_history is False
-        assert runtime.turn.system_prompt.startswith("You answer questions about")
+        # The shared method first, then this deployment's own prompt.
+        assert runtime.turn.system_prompt.startswith("How to work")
+        assert "You answer questions about" in runtime.turn.system_prompt
     finally:
         await runtime.aclose()
 

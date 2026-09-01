@@ -149,12 +149,26 @@ async def test_table_names_are_lowercased_before_matching():
     assert db.queries[0][1][1] == ["books", "authors"]
 
 
-async def test_describe_is_one_round_trip_for_every_table():
-    """It runs at agent startup; one query per table would make a wide schema
-    noticeably slow to start."""
+async def test_describe_does_not_cost_a_query_per_table():
+    """It runs at agent startup, so what matters is that the cost is flat in
+    the number of tables - not that it is exactly one query. It is two: the
+    columns, and the foreign keys between them. Asserting the shape rather
+    than the number leaves room for a third without a false failure, while
+    still catching the change that would actually hurt."""
+    for count in (1, 4, 20):
+        db = FakeDatabase([[]])
+        await PostgresIntrospectionAdapter(db).describe(
+            tuple(f"t{i}" for i in range(count))
+        )
+        assert len(db.queries) <= 3, f"{len(db.queries)} queries for {count} tables"
+
+
+async def test_every_table_is_asked_for_in_one_go():
     db = FakeDatabase([[]])
     await PostgresIntrospectionAdapter(db).describe(("a", "b", "c", "d"))
-    assert len(db.queries) == 1
+
+    _, params = db.queries[0]
+    assert ["a", "b", "c", "d"] in [list(p) for p in params if isinstance(p, list)]
 
 
 # --------------------------------------------------------------------------

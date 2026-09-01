@@ -21,6 +21,8 @@ decisions, which is exactly the split it was written for.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from domain.entities.provider_spec import AgentStatus, AgentType, ProviderSpec
@@ -108,7 +110,46 @@ def parts(**over):
 async def test_a_sub_agent_gets_the_prompt_its_deployment_wrote():
     """The untrusted one, verbatim. Safe because the GRANT is the boundary."""
     turn = assemble_sub_agent(await ready(), **parts())
-    assert turn.system_prompt == "You answer questions about the catalogue."
+    assert "You answer questions about the catalogue." in turn.system_prompt
+
+
+async def test_a_sub_agent_is_also_told_how_to_use_its_tools():
+    """Driving these tools is system behaviour, not something each person
+    registering an agent should have to write out and keep in step."""
+    turn = assemble_sub_agent(await ready(), **parts())
+    assert "Call the schema tool first" in turn.system_prompt
+
+
+async def test_the_shared_half_comes_first():
+    """Every sub-agent gets the same tool schemas and the same method, so
+    those bytes are identical across agents - a provider caching by prefix
+    can reuse them between agents, not only between calls to one."""
+    turn = assemble_sub_agent(await ready(), **parts())
+    method_at = turn.system_prompt.index("How to work")
+    deployment_at = turn.system_prompt.index("You answer questions")
+    assert method_at < deployment_at
+
+
+async def test_two_agents_share_the_same_leading_bytes():
+    a = assemble_sub_agent(await ready(), **parts())
+    b = assemble_sub_agent(
+        await ready(name="circulation", db_role="app_circulation",
+                    description="Loans.", system_prompt="You answer about loans."),
+        **parts(),
+    )
+    shared = os.path.commonprefix([a.system_prompt, b.system_prompt])
+    assert "aggregate in SQL" in shared
+
+
+async def test_the_method_does_not_name_a_real_table():
+    """The examples use placeholders on purpose. A worked example naming a
+    table that does not exist in this deployment is an invitation to the
+    exact failure it is meant to prevent - one model invented two tables and
+    then said the question could not be answered."""
+    from libs.agent_core.prompts import SUB_AGENT_METHOD
+
+    for name in ("books", "authors", "publishers", "loans", "members"):
+        assert name not in SUB_AGENT_METHOD.lower()
 
 
 async def test_a_sub_agent_keeps_no_conversation_history():

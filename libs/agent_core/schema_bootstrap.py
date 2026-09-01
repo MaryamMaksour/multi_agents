@@ -64,17 +64,42 @@ class AgentSchema:
     unprobed: tuple[str, ...] = ()
 
 
-def render_columns(table: TableSchema) -> str:
+def render_columns(
+    table: TableSchema, enum_values: dict[str, tuple[str, ...]] | None = None,
+) -> str:
     """The column block the model reads, in the shape the adapter parses.
 
     `_extract_column_names` reads this back with a `name type` regex when it
     validates a column in get_lsit_values, so the first two fields on each
     line are load-bearing and anything after them is for the model.
+
+    The enum values go here as well as in the filter guidance, and the
+    duplication is the point. `get_filter` is pull-based: a model asks about
+    the columns it already intends to filter on, so guidance placed only
+    there never reaches the decision about *whether* to use a column. Asked
+    for novels, a model filtered on language and left `genre` out entirely,
+    because at the moment it was choosing columns all it had been shown was
+    `genre text`.
+
+    The schema is the surface it always reads, and reads first. A column that
+    says what it contains is a column that can be chosen.
     """
-    return "\n".join(
-        f"{c.name} {c.sql_type}" + ("" if c.nullable else " NOT NULL")
-        for c in table.columns
-    )
+    enum_values = enum_values or {}
+    lines = []
+    for column in table.columns:
+        line = f"{column.name} {column.sql_type}"
+        if not column.nullable:
+            line += " NOT NULL"
+        notes = []
+        if column.references:
+            notes.append(f"joins to {column.references}")
+        values = enum_values.get(column.name)
+        if values:
+            notes.append("one of: " + ", ".join(values))
+        if notes:
+            line += "  -- " + "; ".join(notes)
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def columns_needing_a_count(table: TableSchema) -> tuple[str, ...]:
@@ -187,7 +212,7 @@ async def load_agent_schema(
 
         column_filters = classify_table(table, counts, dist_op, values)
 
-        schema[key] = {"columns": render_columns(table)}
+        schema[key] = {"columns": render_columns(table, values)}
         classified[key] = column_filters
         filters[key] = {name: cf.guidance for name, cf in column_filters.items()}
 

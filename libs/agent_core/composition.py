@@ -57,7 +57,11 @@ from domain.entities.provider_spec import AgentType, ProviderSpec
 from domain.interactors.run_agent_turn import RunAgentTurn
 from libs.agent_core import config
 from libs.agent_core.agent_startup import ReadyAgent, start_agent
-from libs.agent_core.prompts import ORCHESTRATOR_PROMPT, describe_agent
+from libs.agent_core.prompts import (
+    ORCHESTRATOR_PROMPT,
+    describe_agent,
+    sub_agent_prompt,
+)
 from libs.agent_core.sql_validation import validate_identifier
 
 
@@ -115,7 +119,7 @@ def assemble_sub_agent(
         agent_loop=loop,
         history=history,
         cache=cache,
-        system_prompt=ready.spec.system_prompt,
+        system_prompt=sub_agent_prompt(ready.spec),
         use_conversation_history=False,
         session_ttl_seconds=session_ttl_seconds,
         max_session_messages=max_session_messages,

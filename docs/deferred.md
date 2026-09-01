@@ -133,6 +133,12 @@ which is worse than leaving it visible.
 when the query cannot match anything. It is still one embedding call per turn
 for a query that returns nothing.
 
+**Less urgent than it was.** The examples get_memory would have supplied are
+now written into the sub-agent prompt as a fixed method - see
+`SUB_AGENT_METHOD` in libs/agent_core/prompts.py. That covers the case
+get_memory could never have covered anyway: a new deployment has no history,
+so an agent was at its worst on the first question anybody asked it.
+
 **Related, and already done:** a failed memory lookup no longer takes the turn
 down with it. It used to - an embedding model the account could not reach
 returned AccessDenied, and because the memory lookup is the first thing a turn
