@@ -212,3 +212,36 @@ def test_a_separate_endpoint_without_a_key_is_refused_at_startup(monkeypatch):
     config.EMBED_API_KEY = ""
     with pytest.raises(RuntimeError, match="EMBED_API_KEY"):
         config.validate()
+
+
+def test_a_model_name_in_a_url_setting_is_refused(monkeypatch):
+    """Four related settings sit together and two of them take URLs. Putting
+    a model name in one otherwise fails as an HTTP error against a hostname
+    that is a model name, which names neither the setting nor the mistake."""
+    for name, value in FULL_ENV.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("EMBED_API_URL", "embed-multilingual-v3.0")
+
+    config = importlib.reload(config_module)
+    with pytest.raises(RuntimeError, match="is not a URL"):
+        config.validate()
+
+
+def test_a_chat_url_that_is_not_a_url_is_refused(monkeypatch):
+    for name, value in FULL_ENV.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("QWEN_API_URL", "qwen-plus")
+
+    config = importlib.reload(config_module)
+    with pytest.raises(RuntimeError, match="QWEN_API_URL"):
+        config.validate()
+
+
+def test_real_urls_pass(monkeypatch):
+    for name, value in FULL_ENV.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("QWEN_API_URL", "https://example.test/v1")
+    monkeypatch.setenv("EMBED_API_URL", "http://localhost:11434/v1")
+    monkeypatch.setenv("EMBED_API_KEY", "local")
+
+    importlib.reload(config_module).validate()

@@ -150,6 +150,18 @@ def validate() -> None:
             "non-empty value."
         )
 
+    # A URL where a model name was meant, or the reverse. Easy to do when
+    # four related settings sit together, and the failure otherwise arrives
+    # as an HTTP error against a hostname that is a model name - which names
+    # neither the setting nor the mistake.
+    for name, value in (("QWEN_API_URL", QWEN_API_URL), ("EMBED_API_URL", EMBED_API_URL)):
+        if value and not value.startswith(("http://", "https://")):
+            raise RuntimeError(
+                f"{name}={value!r} is not a URL. It is a base URL like "
+                "'https://host/v1'; the model name goes in QWEN_MODEL or "
+                "QWEN_EMBED_MODEL."
+            )
+
     if DIST_OP not in ("<=>", "<->", "<#>"):
         raise RuntimeError(
             f"DIST_OP must be one of '<=>', '<->', '<#>' - got {DIST_OP!r}. "
