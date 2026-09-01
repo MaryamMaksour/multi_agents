@@ -133,11 +133,11 @@ def main() -> None:
 
     print("─" * 72)
     print(
-        "Token usage and cache hits are on the provider's console - Model\n"
-        "Studio > Billing for DashScope. What to look for: on the second and\n"
-        "third questions, cached input tokens should be most of the input.\n"
-        "Near zero means the prefix is not stable and the tool schemas are\n"
-        "being paid for on every call in the loop."
+        "Token usage is not visible from here - it comes back to the agents,\n"
+        "not to this caller. To measure whether the fixed prefix is being\n"
+        "reused rather than re-read on every call:\n"
+        "\n"
+        "    python3 scripts/check_cache.py"
     )
 
 

@@ -207,6 +207,9 @@ call in the agent loop, and one question is seven calls. With DashScope's
 implicit cache it is about 39% of the bill.
 
 Nothing needs enabling; it is the message order that makes it possible.
+`scripts/check_cache.py` sends this system's real prefix twice and prints
+what the provider reports as reused, so whether it is working is a number
+rather than an assumption.
 
 `EMBEDDING_DIM` must match the `vector(N)` columns. The seed uses 1024;
 changing it is a migration and a re-embedding of every row, not a restart.

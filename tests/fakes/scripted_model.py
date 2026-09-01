@@ -116,7 +116,18 @@ class ScriptedModel:
                 "index": 0, "message": message,
                 "finish_reason": "tool_calls" if message.get("tool_calls") else "stop",
             }],
-            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            # A plausible usage block, including the cached-token shape, so
+            # anything that reads those numbers is exercised rather than
+            # handed zeros. The second call onward reports most of the prompt
+            # as reused, which is what a stable prefix looks like.
+            "usage": {
+                "prompt_tokens": 1200 + 300 * (self._step - 1),
+                "completion_tokens": 40,
+                "total_tokens": 1240 + 300 * (self._step - 1),
+                "prompt_tokens_details": {
+                    "cached_tokens": 0 if self._step == 1 else 1200,
+                },
+            },
         }
 
     def _embedding(self, body: dict) -> dict:
