@@ -340,6 +340,10 @@ def test_enum_guidance_points_at_the_tool_that_lists_values():
 
 
 def test_enum_guidance_lists_the_values_when_it_has_them():
+    """The difference between "few distinct values" and which ones. Asked for
+    novels, a model that had only been told `genre` was short filtered on
+    language and left `genre` out of the query entirely - the count it
+    returned was right for a question nobody asked."""
     table = books()
     text = build_guidance(
         table, table.column("genre"), FilterKind.ENUM,
@@ -347,6 +351,33 @@ def test_enum_guidance_lists_the_values_when_it_has_them():
     )
     assert "novel" in text and "poetry" in text and "drama" in text
     assert "get_lsit_values" not in text
+
+
+def test_enum_guidance_says_the_question_may_word_it_differently():
+    """The failure was a question in Arabic about a value stored in English.
+    A model matching words to values needs telling that is what to do."""
+    table = books()
+    text = build_guidance(
+        table, table.column("genre"), FilterKind.ENUM, enum_values=["novel"],
+    )
+    assert "any language" in text
+    assert "genre" in text
+
+
+def test_classify_table_puts_the_values_into_the_guidance():
+    """The wiring, not just the renderer - the values have to survive the
+    trip from the probe to the sentence."""
+    result = classify_table(
+        books(), COUNTS, enum_values={"genre": ("novel", "poetry")},
+    )
+    assert "novel" in result["genre"].guidance
+
+
+def test_a_column_with_no_values_read_still_names_the_tool():
+    """Reading the values can fail per column. When it does, the guidance
+    falls back to telling the model which tool lists them."""
+    result = classify_table(books(), COUNTS, enum_values={})
+    assert "get_lsit_values" in result["genre"].guidance
 
 
 def test_text_guidance_warns_against_listing_the_values():

@@ -348,6 +348,24 @@ async def open_runtime(agent_key: str | None = None) -> Runtime:
 
     redis_client = redis.from_url(config.REDIS_URL, decode_responses=False)
     closers.append(redis_client.aclose)
+
+    # Asked at startup, because from_url does not connect - it builds a
+    # client and waits. Without this a process comes up healthy against a
+    # Redis that is not there and fails on the first question, after the
+    # model has been called and paid for, with a message about a lock.
+    #
+    # The same rule as the history table and the GRANT check: a
+    # misconfigured process should be one that refuses to start, not one
+    # that answers wrongly.
+    try:
+        await redis_client.ping()
+    except Exception as e:
+        raise RuntimeError(
+            f"Cannot reach Redis at {config.REDIS_URL}: {e}\n"
+            "It holds the per-session lock and the conversation window, so "
+            "nothing can be answered without it."
+        ) from e
+
     cache = RedisCacheAdapter(redis_client)
 
     embeddings = QwenEmbeddingAdapter(embed_client, config.QWEN_EMBED_MODEL)

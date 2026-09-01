@@ -117,3 +117,26 @@ class PostgresIntrospectionAdapter:
             f'SELECT count(DISTINCT "{column_id}") AS n FROM "{self._schema}"."{table_id}"'
         )
         return int(rows[0]["n"]) if rows else 0
+
+    async def distinct_values(self, table: str, column: str, limit: int) -> tuple[str, ...]:
+        """The values a column holds, ordered, capped at `limit`.
+
+        NULL is excluded: it is not a value a model can match on, and listing
+        it invites `= NULL`, which matches nothing and looks like it should.
+
+        Ordered rather than arbitrary so the same database produces the same
+        guidance - the values end up in a prompt, and a prompt that reshuffles
+        between restarts loses the provider's prefix cache for no reason.
+        """
+        try:
+            table_id = validate_identifier(table)
+            column_id = validate_identifier(column)
+        except ValueError as e:
+            raise DatabaseError(f"Refusing to introspect: {e}") from e
+
+        rows = await self._db.fetch(
+            f'SELECT DISTINCT "{column_id}" AS v FROM "{self._schema}"."{table_id}" '
+            f'WHERE "{column_id}" IS NOT NULL ORDER BY 1 LIMIT $1',
+            int(limit),
+        )
+        return tuple(str(row["v"]) for row in rows)

@@ -57,6 +57,7 @@ class FakeSchemaPort:
         self._counts = COUNTS if counts is None else counts
         self._fails = set(fails)
         self.probes: list[tuple[str, str]] = []
+        self.reads: list[tuple[str, str, int]] = []
         self.described: list[tuple[str, ...]] = []
 
     async def list_tables(self) -> tuple[str, ...]:
@@ -71,6 +72,12 @@ class FakeSchemaPort:
         if (table, column) in self._fails:
             raise DatabaseError(f"cannot read {table}.{column}")
         return self._counts.get((table, column), 1)
+
+    async def distinct_values(self, table: str, column: str, limit: int) -> tuple[str, ...]:
+        self.reads.append((table, column, limit))
+        if (table, column) in self._fails:
+            raise DatabaseError(f"cannot read {table}.{column}")
+        return tuple(f"{column}-{i}" for i in range(min(3, limit)))
 
 
 # --------------------------------------------------------------------------
@@ -259,7 +266,9 @@ async def test_the_loader_output_drives_the_adapter_unchanged():
     answer = await adapter.call_tool(
         "get_filter", {"columns": ["genre", "summary"], "table_name": "books"}
     )
-    assert "get_lsit_values" in answer["genre"]
+    # The values themselves, not the name of the tool that would list them -
+    # they were read at startup and are already in the sentence.
+    assert "genre-0" in answer["genre"]
     assert "embed_summary" in answer["summary"]
 
 
@@ -281,3 +290,57 @@ async def test_counting_separates_the_failures_from_the_results():
     assert "isbn" not in counts
     assert counts["genre"] == 10
     assert unprobed == ("books.isbn",)
+
+
+# --------------------------------------------------------------------------
+# reading the values of the columns that turned out to be enums
+# --------------------------------------------------------------------------
+
+
+async def test_enum_columns_have_their_values_read():
+    port = FakeSchemaPort()
+    result = await load_agent_schema(port)
+
+    assert ("books", "genre") in [(t, c) for t, c, _ in port.reads]
+    assert "genre-0" in result.filters["books"]["genre"]
+
+
+async def test_only_enum_columns_are_read():
+    """One query per enum column, and none for anything else. isbn has 420
+    distinct values, so reading them is a cost with no use - and a list that
+    long in a prompt is noise that crowds out the schema."""
+    port = FakeSchemaPort()
+    await load_agent_schema(port)
+
+    read = {column for _, column, _ in port.reads}
+    assert "genre" in read
+    assert "isbn" not in read
+    assert "summary" not in read      # semantic, decided before cardinality
+    assert "page_count" not in read   # numeric, likewise
+
+
+async def test_the_read_is_capped_at_the_enum_cutoff():
+    """The same number that decided the column was an enum, not a second one
+    that could drift from it."""
+    from domain.entities.column_filter import ENUM_MAX_DISTINCT
+
+    port = FakeSchemaPort()
+    await load_agent_schema(port)
+
+    assert all(limit == ENUM_MAX_DISTINCT for _, _, limit in port.reads)
+
+
+async def test_a_failed_value_read_leaves_the_column_an_enum():
+    """Degrade, never raise - the same rule the count probe follows. The
+    guidance falls back to naming the tool that lists values."""
+    port = FakeSchemaPort(fails={("books", "genre")})
+    result = await load_agent_schema(port)
+
+    assert result.classified["books"]["genre"].kind is FilterKind.TEXT
+
+
+async def test_values_are_not_read_when_probing_is_off():
+    port = FakeSchemaPort()
+    await load_agent_schema(port, probe_cardinality=False)
+
+    assert port.reads == []

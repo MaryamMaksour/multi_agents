@@ -230,8 +230,9 @@ async def test_startup_output_drives_a_real_sql_tool_adapter():
         await pool.close()
 
     # Case folded on both the table and the column, which is the fix that
-    # came with feature 2.
-    assert "get_lsit_values" in guidance["Genre"]
+    # came with feature 2. And the guidance carries the real values, read out
+    # of the column at startup rather than named as a tool to call.
+    assert "novel" in guidance["Genre"]
     assert "embed_summary" in guidance["summary"]
     assert "rows" in rows
 

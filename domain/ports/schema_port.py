@@ -50,3 +50,21 @@ class SchemaPort(Protocol):
             DatabaseError: if the database call fails.
         """
         ...
+
+    async def distinct_values(self, table: str, column: str, limit: int) -> tuple[str, ...]:
+        """The values a column actually holds, up to `limit` of them.
+
+        Only worth asking once distinct_count says there are few, which is
+        why it is a second call rather than part of the first: reading the
+        values of a column with four hundred of them is a cost with no use.
+
+        What it buys is the difference between telling a model that a column
+        has few distinct values and telling it which ones. A question about
+        "روايات" cannot be turned into `genre = 'novel'` by a model that has
+        never been shown that 'novel' is one of the ten things that column
+        contains.
+
+        Raises:
+            DatabaseError: if the database call fails.
+        """
+        ...

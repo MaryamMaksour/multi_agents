@@ -93,6 +93,7 @@ def classify_table(
     table,
     distinct_counts: dict[str, int] | None = None,
     dist_op: str = DEFAULT_DIST_OP,
+    enum_values: dict[str, tuple[str, ...]] | None = None,
 ) -> dict[str, ColumnFilter]:
     """Classify every column in a TableSchema.
 
@@ -107,6 +108,13 @@ def classify_table(
     not the other would tell the model to write a query the index cannot
     serve.
 
+    `enum_values` are the values themselves, for the columns that have few
+    enough to list. Without them the guidance can only say a column has a
+    short list; with them it says which. That difference decided a wrong
+    answer in practice: asked for novels, a model filtered on language and
+    ignored `genre` entirely, because nothing had told it that 'novel' was
+    one of the ten things that column contains.
+
     Vector columns are kept in the result rather than filtered out. They
     classify as VECTOR_STORAGE, so a model that asks about `embed_summary`
     gets told what it is instead of "column not found".
@@ -115,12 +123,15 @@ def classify_table(
     # below return None, which classify_column reads as "no cardinality
     # known" and sends to TEXT.
     distinct_counts = distinct_counts or {}
+    enum_values = enum_values or {}
 
     table_filter: dict[str, ColumnFilter] = {}
 
     for column in table.columns:
         kind = classify_column(table, column, distinct_counts.get(column.name))
-        guidance = build_guidance(table, column, kind, dist_op)
+        guidance = build_guidance(
+            table, column, kind, dist_op, enum_values.get(column.name)
+        )
         table_filter[column.name] = ColumnFilter(column.name, kind, guidance)
 
     return table_filter
@@ -135,8 +146,9 @@ def build_guidance(table, column, kind, dist_op: str = DEFAULT_DIST_OP,
     says "use a distance operator" without saying which one invites `<->`
     against an index built for `<=>`.
 
-    `enum_values` is unused for now. Reading a column's values is a second
-    query per ENUM column at startup; see docs/deferred.md.
+    `enum_values`, when given, are listed in full. A model shown ten values
+    can map a word in the question onto one of them; a model told only that
+    there are "few" cannot, and quietly leaves the column out of the query.
     """
     if kind is FilterKind.VECTOR_STORAGE:
         source = column.name.removeprefix(EMBED_COLUMN_PREFIX)
@@ -190,8 +202,11 @@ def build_guidance(table, column, kind, dist_op: str = DEFAULT_DIST_OP,
         if enum_values:
             listed = ", ".join(str(v) for v in enum_values)
             return (
-                f"One of a short list of values: {listed}. Match exactly with = "
-                f"against one of those - do not invent a spelling."
+                f"One of exactly these values: {listed}. If the question names "
+                f"any of them - in any language - filter on {column.name} with "
+                f"= and the value spelled as above. Do not invent a spelling, "
+                f"and do not leave the column out because the question worded "
+                f"it differently."
             )
         return (
             f"A short list of distinct values. Call "

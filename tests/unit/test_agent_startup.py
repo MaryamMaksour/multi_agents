@@ -80,6 +80,10 @@ class RoleScopedSchemaPort:
         self.probes.append((table, column))
         return self._counts.get((table, column), 1)
 
+    async def distinct_values(self, table, column, limit):
+        self.probes.append((table, column))
+        return ("one", "two", "three")[:limit]
+
 
 # --------------------------------------------------------------------------
 # verify_grants, on its own

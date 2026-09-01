@@ -65,6 +65,9 @@ class SchemaPortStub:
     async def distinct_count(self, table, column):
         return 5
 
+    async def distinct_values(self, table, column, limit):
+        return ("one", "two", "three")[:limit]
+
 
 async def ready(**overrides) -> ReadyAgent:
     return ReadyAgent(

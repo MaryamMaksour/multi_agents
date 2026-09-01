@@ -84,20 +84,6 @@ tool that does not exist.
 
 ---
 
-## Listing a column's values in the filter guidance
-
-**The idea.** For an ENUM column, telling the model `one of: novel, poetry,
-drama` is far more useful than telling it the column has few distinct values -
-it matches what is stored rather than what it imagines.
-
-**Parked because** it needs a second call per ENUM column at startup and a cap
-on how many values to include, and the classifier is worth getting working
-first.
-
-**Comes back after** feature 2 runs end to end and the prompts can be judged.
-
----
-
 ## One sample value in the guidance for TEXT columns
 
 **The idea.** For a high-cardinality text column like `shelf_code` (399
@@ -267,6 +253,31 @@ it has.
 
 ---
 
+## The first real answers, and the two things they got wrong
+
+Three questions, all answered from real data, every number checked against
+the database and correct: 127 English books under 400 pages, 129 Arabic books
+under 300, and 28 authors with more than three books - down to the individual
+counts per author.
+
+Two errors, both in wording rather than plumbing, and both now addressed.
+
+**"رواية" was read as "book".** The model filtered on `language` and left
+`genre` out of the query, then reported the result as a count of novels. The
+number was right for a question nobody asked - 129 books, where 10 are
+novels. `novel` is one of ten values in that column, and nothing had ever
+shown the model that. Fixed by listing an enum column's actual values in its
+guidance, which is the item that used to sit here as "listing a column's
+values" and is now done.
+
+**An English question was answered in Arabic**, because the previous question
+in the same session had been Arabic and the conversation window outweighed
+the instruction. The orchestrator prompt now says the language rule applies
+to the question being answered now, and that earlier turns are context rather
+than an instruction about wording.
+
+---
+
 ## The first real question, and what it found
 
 Run on 2026-08-31 against a real deployment with a real key. Three things
@@ -301,16 +312,3 @@ the real system against `tests/fakes/scripted_model.py` - an
 OpenAI-compatible endpoint that replies from a script and decides nothing.
 
 ---
-
-## A real question has never gone through a real model
-
-Every layer up to the model call runs against real Postgres and Redis in
-`tests/integration/test_runtime_live.py`: startup, `SET ROLE`, introspection,
-GRANT verification, history checks, tool binding, and the HTTP edge. The model
-call itself needs an API key.
-
-**Left uncovered rather than skipped.** A test that skips without a key
-reports green for a path nobody ran, which is worse than an obvious hole.
-
-**Comes back the moment a key is available**, and it is the first thing to do
-then - not last. Everything downstream of it is currently reasoning.

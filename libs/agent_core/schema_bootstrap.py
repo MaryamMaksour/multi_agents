@@ -18,6 +18,13 @@ could actually change because of it. That set is not restated here - it is
 derived by asking the classifier what a column would be *without* a count.
 Only TEXT can become ENUM, so only TEXT is probed.
 
+The columns that turn out to be enums get one more query each, to read the
+values themselves. That is the difference between telling a model a column
+has a short list and telling it which values are on it - and in practice the
+difference between a model filtering on `genre` and silently leaving it out.
+Same derivation: a column is read when the classifier, given the count just
+measured, calls it ENUM.
+
 And a probe that fails is not a startup failure. ENUM is an optimisation; a
 column whose count could not be read is classified TEXT, which is what it
 would have been anyway had nobody asked. The names are reported rather than
@@ -28,7 +35,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from domain.entities.column_filter import ColumnFilter, FilterKind
+from domain.entities.column_filter import ENUM_MAX_DISTINCT, ColumnFilter, FilterKind
 from domain.entities.table_schema import TableSchema
 from domain.exceptions import DatabaseError
 from domain.ports.schema_port import SchemaPort
@@ -87,6 +94,38 @@ def columns_needing_a_count(table: TableSchema) -> tuple[str, ...]:
     )
 
 
+async def read_enum_values(
+    schema_port: SchemaPort, table: TableSchema, counts: dict[str, int],
+) -> tuple[dict[str, tuple[str, ...]], tuple[str, ...]]:
+    """Read the values of the columns that turned out to be enums.
+
+    A second pass rather than part of the first, and derived rather than
+    restated: a column is worth reading when classify_column, given the count
+    just measured, calls it ENUM. So the rule for "few enough to list" stays
+    in one place, and the cap is the classifier's cutoff rather than a second
+    number that could drift from it.
+
+    Costs one query per enum column at startup - `genre` and `language` on
+    the development schema, two queries. Failures are per column and never
+    raised: a column whose values could not be read still classifies as ENUM,
+    and its guidance falls back to naming the tool that lists them.
+    """
+    values: dict[str, tuple[str, ...]] = {}
+    unread: list[str] = []
+
+    for column in table.columns:
+        if classify_column(table, column, counts.get(column.name)) is not FilterKind.ENUM:
+            continue
+        try:
+            values[column.name] = await schema_port.distinct_values(
+                table.name, column.name, ENUM_MAX_DISTINCT
+            )
+        except DatabaseError:
+            unread.append(f"{table.name}.{column.name}")
+
+    return values, tuple(unread)
+
+
 async def count_distinct_values(
     schema_port: SchemaPort, table: TableSchema,
 ) -> tuple[dict[str, int], tuple[str, ...]]:
@@ -141,10 +180,12 @@ async def load_agent_schema(
         if probe_cardinality:
             counts, failed = await count_distinct_values(schema_port, table)
             unprobed.extend(failed)
+            values, unread = await read_enum_values(schema_port, table, counts)
+            unprobed.extend(unread)
         else:
-            counts = {}
+            counts, values = {}, {}
 
-        column_filters = classify_table(table, counts, dist_op)
+        column_filters = classify_table(table, counts, dist_op, values)
 
         schema[key] = {"columns": render_columns(table)}
         classified[key] = column_filters

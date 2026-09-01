@@ -118,7 +118,7 @@ async def test_the_sub_agents_tools_are_bound_to_its_own_tables(environment):
 
     # Classified from the real catalogue, not from anything written down.
     assert "embed_summary" in answer["summary"]
-    assert "get_lsit_values" in answer["genre"]
+    assert "novel" in answer["genre"]
 
 
 async def test_a_sub_agent_keeps_no_conversation_history(environment):

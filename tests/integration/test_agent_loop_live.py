@@ -223,13 +223,18 @@ def test_the_schema_the_model_sees_is_the_real_one(monkeypatch):
 
 def test_the_filters_the_model_sees_are_classified_from_real_data(monkeypatch):
     """genre has 10 distinct values in the seeded data, so it is an ENUM and
-    the guidance points at the values tool. Nothing declared that."""
+    the guidance lists them. Nothing declared any of that - the kind came
+    from a count and the values from the column itself."""
     with ScriptedModel(CATALOG_SCRIPT) as model:
         with running(model, monkeypatch, "catalog") as client:
             client.post("/run", json={"user_input": "how many short novels?"})
 
     filters = json.loads(model.tool_results_seen()[1])
-    assert "get_lsit_values" in filters["genre"]
+
+    # The real values, read out of the table at startup. Being told a column
+    # is short is not enough to turn "روايات" into genre = 'novel'.
+    assert "novel" in filters["genre"]
+    assert "poetry" in filters["genre"]
     assert "Numeric (integer)" in filters["page_count"]
 
 
