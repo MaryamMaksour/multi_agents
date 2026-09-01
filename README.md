@@ -47,6 +47,20 @@ Ask it something:
 python3 scripts/first_question.py
 ```
 
+**No key yet?** There is a scripted model that needs none:
+
+```bash
+python3 scripts/demo_model.py           # in one terminal
+```
+
+It follows a fixed flow - schema, filters, one query, answer - so everything
+under it runs for real: tool dispatch, the SQL validator, the least-privilege
+role, Postgres, the delegation hop. The number in the answer is the count
+Postgres returned; the sentence around it is written in the script. A
+demonstration and a development harness, never an evaluation - it cannot tell
+you whether a model would choose correctly, only that everything around one
+works.
+
 That checks the orchestrator is up and routing before spending a token, asks
 three questions, and says where to read the token and cache numbers. A new
 DashScope International account gets 1M input and 1M output tokens free for
@@ -138,6 +152,13 @@ the message says the key is wrong when it is the region that is. The default
 here is Singapore; Beijing is `https://dashscope.aliyuncs.com/compatible-mode/v1`
 and is substantially cheaper for the same models. To find out which one a key
 belongs to:
+
+A key can also authenticate and still reach no models -
+`403 AccessDenied.Unpurchased` - which means the account has not activated
+Model Studio in that region. `python3 scripts/check_model.py` asks each
+candidate directly and reports both whether the key may call it and whether
+it returns a tool call at all; a model that answers in prose cannot drive
+this system, and fails silently rather than loudly.
 
 ```bash
 for host in dashscope-intl.aliyuncs.com dashscope.aliyuncs.com; do
