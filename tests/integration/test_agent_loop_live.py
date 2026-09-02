@@ -206,8 +206,6 @@ def test_the_tools_the_model_was_offered_are_the_sql_tools(monkeypatch):
 
     assert "db_execute" in model.tools_offered
     assert "get_filter" in model.tools_offered
-    # Withheld deliberately - it queries columns no schema here has.
-    assert "get_table_records" not in model.tools_offered
 
 
 def test_the_schema_the_model_sees_is_the_real_one(monkeypatch):

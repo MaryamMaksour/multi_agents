@@ -241,7 +241,7 @@ def test_not_null_is_shown():
 
 def test_the_rendered_block_parses_back_to_the_column_names():
     """The adapter reads this string back with a regex to validate a column
-    in get_lsit_values. If the two disagree, every column looks unknown."""
+    in get_list_values. If the two disagree, every column looks unknown."""
     from adapters.outbound.tools.sql_tool_adapter import _extract_column_names
 
     parsed = _extract_column_names({"columns": render_columns(BOOKS)})
@@ -258,7 +258,6 @@ async def test_the_loader_output_drives_the_adapter_unchanged():
         allowed_tables=list(loaded.tables),
         schema=loaded.schema,
         filters=loaded.filters,
-        lsit_values={},
         dist_op="<=>",
         vector_ttl_seconds=900,
     )

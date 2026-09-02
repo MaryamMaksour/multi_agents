@@ -60,7 +60,7 @@ class SqlToolAdapter():
 
     def __init__(self, db: DatabasePort, embeddings: EmbeddingPort, cache: CachePort,
                         allowed_tables: list[str], schema: dict, filters: dict, 
-                        lsit_values: dict, dist_op: str, vector_ttl_seconds: int  ):
+                        dist_op: str, vector_ttl_seconds: int  ):
 
         self._db = db
         self._embeddings = embeddings
@@ -68,7 +68,6 @@ class SqlToolAdapter():
         self._allowed_tables = {table.lower() for table in allowed_tables}
         self._schema = schema
         self._filters = filters
-        self._lsit_values = lsit_values
         self._dist_op = dist_op 
         self._vector_ttl_seconds = vector_ttl_seconds
 
@@ -76,9 +75,8 @@ class SqlToolAdapter():
         self._handlers = {
             "get_table_schema": self._get_table_schema,
             "get_filter": self._get_filter,
-            "get_lsit_values": self._get_lsit_values,
+            "get_list_values": self._get_list_values,
             "db_execute": self._db_execute,
-            "get_table_records": self._get_table_records,
             "embed_query_tool": self._embed_query_tool,
             "execute_next_cursor": self._execute_next_cursor,
         }
@@ -91,22 +89,12 @@ class SqlToolAdapter():
 
         Names here must match the _handlers keys exactly - call_tool dispatches
         on them, so a mismatch is an UnknownToolError at runtime rather than a
-        startup failure. (That includes "get_lsit_values": the spelling is the
-        contract until the handler key is renamed too.)
+        startup failure.
 
         The descriptions carry the rules that _db_execute enforces by
         returning {"error": ...}. Stating them here turns a wasted round trip
         into a query the model gets right the first time - the error path stays
         as the guarantee, this is just the shorter route to it.
-
-        Not everything dispatchable is declared. `get_table_records` is still
-        in _handlers and is deliberately absent from this list: it selects
-        `row_txt` ordered by an `embedding` column, and neither exists in any
-        schema this design produces - embeddings live in `embed_<column>`
-        columns beside the column they describe. Declaring it told the model
-        about a tool that fails on every call. The handler is left in place
-        because whether whole-row search is rebuilt or dropped is a decision
-        of its own; see docs/deferred.md.
         """
         return [
             {
@@ -163,7 +151,7 @@ class SqlToolAdapter():
             {
                 "type": "function",
                 "function": {
-                    "name": "get_lsit_values",
+                    "name": "get_list_values",
                     "description": (
                         "Return the distinct values stored in one column. Use it before "
                         "filtering on a column whose values you have not seen, so you "
@@ -345,7 +333,7 @@ class SqlToolAdapter():
             return filters
 
 
-    async def _get_lsit_values(self, table: str, column: str) -> Any:
+    async def _get_list_values(self, table: str, column: str) -> Any:
         table_id = validate_identifier((table or "").lower())
         if table_id not in self._allowed_tables:
             return {"error": f"Unknown table: {table}. use one of the tables in the schema only {sorted(self._allowed_tables)}"}
@@ -442,25 +430,6 @@ class SqlToolAdapter():
             })
 
         return {"rows": data, "row_count": total, "has_more": has_more, "next_cursor": next_cursor}
-
-
-    async def _get_table_records(self, query: str, table_name: str, mx: int = 5) -> Any:
-        table_key = table_name.lower()
-        if table_key not in self._allowed_tables:
-            return {"error": f"Unknown table: {table_name}. use one of {sorted(self._allowed_tables)}"}
-
-        mx = max(3, min(int(mx), 6))
-        vec = to_vector_literal(await self._embeddings.embed(query))
-
-        sql = f"""
-            SELECT row_txt
-            FROM {validate_identifier(table_key)}
-            ORDER BY embedding {self._dist_op} $1::vector
-            LIMIT $2
-        """
-        rows = await self._db.fetch(sql, vec, mx)
-        items = [r["row_txt"] for r in rows]
-        return {"rows": items, "row_count": len(items), "has_more": False, "next_cursor": ""}
 
 
     async def _embed_query_tool(self, query: str) -> Any:

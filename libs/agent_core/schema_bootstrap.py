@@ -70,7 +70,7 @@ def render_columns(
     """The column block the model reads, in the shape the adapter parses.
 
     `_extract_column_names` reads this back with a `name type` regex when it
-    validates a column in get_lsit_values, so the first two fields on each
+    validates a column in get_list_values, so the first two fields on each
     line are load-bearing and anything after them is for the model.
 
     The enum values go here as well as in the filter guidance, and the
