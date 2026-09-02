@@ -52,12 +52,17 @@ class FakeSchemaPort:
     is exercised without a database that can be made to misbehave.
     """
 
-    def __init__(self, tables=(BOOKS, AUTHORS), counts=None, fails=()):
+    def __init__(self, tables=(BOOKS, AUTHORS), counts=None, fails=(),
+                 empty_vectors=()):
         self._tables = {t.name: t for t in tables}
         self._counts = COUNTS if counts is None else counts
         self._fails = set(fails)
+        # Vector columns that hold nothing. Empty by default, so every
+        # existing test describes a database whose embeddings were filled.
+        self._empty_vectors = set(empty_vectors)
         self.probes: list[tuple[str, str]] = []
         self.reads: list[tuple[str, str, int]] = []
+        self.presence: list[tuple[str, str]] = []
         self.described: list[tuple[str, ...]] = []
 
     async def list_tables(self) -> tuple[str, ...]:
@@ -78,6 +83,12 @@ class FakeSchemaPort:
         if (table, column) in self._fails:
             raise DatabaseError(f"cannot read {table}.{column}")
         return tuple(f"{column}-{i}" for i in range(min(3, limit)))
+
+    async def has_any_value(self, table: str, column: str) -> bool:
+        self.presence.append((table, column))
+        if (table, column) in self._fails:
+            raise DatabaseError(f"cannot read {table}.{column}")
+        return (table, column) not in self._empty_vectors
 
 
 # --------------------------------------------------------------------------
@@ -344,3 +355,73 @@ async def test_values_are_not_read_when_probing_is_off():
     await load_agent_schema(port, probe_cardinality=False)
 
     assert port.reads == []
+
+
+# --------------------------------------------------------------------------
+# the vector column that exists and holds nothing
+# --------------------------------------------------------------------------
+
+
+async def test_an_empty_vector_column_stops_its_partner_being_semantic():
+    """The failure that answers wrongly and reports no error at all.
+
+    `summary` has an `embed_summary` partner, so it classified as SEMANTIC and
+    the model was told it could search it. With the column empty,
+
+        ORDER BY embed_summary <=> $1 LIMIT 10
+
+    returns zero rows - not an error, zero rows, because a pgvector index does
+    not index NULL - and the model reports there are none. On the development
+    database every one of the eleven vector columns is empty, so every
+    semantic search returned nothing and looked like an answer.
+    """
+    port = FakeSchemaPort(empty_vectors={("books", "embed_summary")})
+    schema = await load_agent_schema(port, tables=("books",))
+
+    assert schema.classified["books"]["summary"].kind is FilterKind.TEXT
+
+
+async def test_a_filled_vector_column_still_makes_its_partner_semantic():
+    """The fix must not switch semantic search off where it works."""
+    schema = await load_agent_schema(FakeSchemaPort(), tables=("books",))
+    assert schema.classified["books"]["summary"].kind is FilterKind.SEMANTIC
+
+
+async def test_the_downgraded_column_gets_text_guidance():
+    """Not just a different label: the guidance has to tell the model to use
+    ILIKE, or it has a column it is not told how to search at all."""
+    port = FakeSchemaPort(empty_vectors={("books", "embed_summary")})
+    schema = await load_agent_schema(port, tables=("books",))
+
+    guidance = schema.filters["books"]["summary"]
+    assert "ILIKE" in guidance
+    assert "<=>" not in guidance
+
+
+async def test_an_unfillable_probe_leaves_the_column_semantic():
+    """Being unable to check is not evidence of emptiness. Downgrading on a
+    transient error would quietly remove the feature."""
+    port = FakeSchemaPort(fails={("books", "embed_summary")})
+    schema = await load_agent_schema(port, tables=("books",))
+
+    assert schema.classified["books"]["summary"].kind is FilterKind.SEMANTIC
+
+
+async def test_the_presence_check_asks_only_about_vector_columns():
+    """One LIMIT 1 per vector column. Asking it of every column would turn a
+    cheap startup check into a scan per column."""
+    port = FakeSchemaPort()
+    await load_agent_schema(port, tables=("books",))
+
+    asked = {column for _, column in port.presence}
+    assert asked == {c.name for c in BOOKS.columns if c.is_vector}
+    assert all(column.startswith("embed_") for column in asked)
+
+
+async def test_skipping_the_probes_skips_the_presence_check_too():
+    """probe_cardinality=False is for a large database where startup probes
+    are the slow part. It must not leave one class of probe running."""
+    port = FakeSchemaPort()
+    await load_agent_schema(port, tables=("books",), probe_cardinality=False)
+
+    assert port.presence == []

@@ -84,6 +84,12 @@ class RoleScopedSchemaPort:
         self.probes.append((table, column))
         return ("one", "two", "three")[:limit]
 
+    async def has_any_value(self, table, column):
+        # A database whose embeddings were filled. The empty case has its own
+        # tests in test_schema_bootstrap.py; here it would only obscure what
+        # these tests are about, which is grants.
+        return True
+
 
 # --------------------------------------------------------------------------
 # verify_grants, on its own

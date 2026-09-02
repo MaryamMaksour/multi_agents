@@ -51,6 +51,29 @@ class SchemaPort(Protocol):
         """
         ...
 
+    async def has_any_value(self, table: str, column: str) -> bool:
+        """Whether a column holds a single non-NULL value.
+
+        Added for one failure that produces wrong answers with no error at
+        all. A vector column that was created but never filled makes its
+        partner look semantically searchable: the classifier calls the column
+        SEMANTIC, the model is told it may search it, and
+
+            ORDER BY embed_title_en <=> $1 LIMIT 10
+
+        returns **zero rows and no error**, because a pgvector index does not
+        index NULL. The model then answers "there are none", which is a
+        confident wrong answer about a table with four hundred rows in it.
+
+        Cheap by construction - `SELECT 1 ... WHERE col IS NOT NULL LIMIT 1`
+        stops at the first row - so it can be asked for every vector column at
+        startup without the cost of counting them.
+
+        Raises:
+            DatabaseError: if the database call fails.
+        """
+        ...
+
     async def distinct_values(self, table: str, column: str, limit: int) -> tuple[str, ...]:
         """The values a column actually holds, up to `limit` of them.
 

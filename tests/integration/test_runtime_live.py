@@ -116,8 +116,12 @@ async def test_the_sub_agents_tools_are_bound_to_its_own_tables(environment):
     finally:
         await runtime.aclose()
 
-    # Classified from the real catalogue, not from anything written down.
-    assert "embed_summary" in answer["summary"]
+    # Classified from the real catalogue, not from anything written down -
+    # including whether the embedding column holds anything. It does not on a
+    # database the seeds have filled with rows but no vectors, and the
+    # guidance is the text one, which is the one that works there.
+    assert ("embed_summary" in answer["summary"]
+            or "ILIKE" in answer["summary"])
     assert "novel" in answer["genre"]
 
 

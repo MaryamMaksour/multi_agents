@@ -45,7 +45,8 @@ DATETIME_TYPES: frozenset[str] = frozenset({
 })
 
 
-def classify_column(table, column, distinct_count: int | None) -> FilterKind:
+def classify_column(table, column, distinct_count: int | None,
+                    empty_vectors: frozenset[str] | set[str] = frozenset()) -> FilterKind:
     """Decide one column's FilterKind.
 
     Precedence, and the order matters:
@@ -53,7 +54,8 @@ def classify_column(table, column, distinct_count: int | None) -> FilterKind:
         1. the column IS a vector column       -> not filterable directly,
                                                   it is storage for another
                                                   column's semantics
-        2. it has an embed_<name> partner      -> SEMANTIC
+        2. it has a *filled* embed_<name>
+           partner                             -> SEMANTIC
         3. its type is numeric                 -> OPERATOR
         4. its type is a date/time             -> DATETIME
         5. it is text with low cardinality     -> ENUM
@@ -64,6 +66,23 @@ def classify_column(table, column, distinct_count: int | None) -> FilterKind:
     not None but is treated the same way: an empty column has no short list
     for the model to choose from.
 
+    `empty_vectors` names the vector columns that exist but hold nothing, and
+    it exists because of a failure that produces wrong answers with no error
+    anywhere. A vector column that was created and never filled made its
+    partner look searchable: the column classified SEMANTIC, the model was
+    told it could search it, and
+
+        ORDER BY embed_title_en <=> $1 LIMIT 10
+
+    returned zero rows - not an error, zero rows, because a pgvector index
+    does not index NULL. The model then reported that there are none, about a
+    table holding four hundred rows. On this development database every one of
+    the eleven vector columns is empty, so every semantic search silently
+    returns nothing.
+
+    A column whose partner is empty falls through to TEXT, where ILIKE finds
+    what a vector search could not.
+
     Note what is NOT here: the old code had two unconditional overrides, one
     for name/shortname and one for address/location, that fired regardless of
     which list the column came from. Those encoded one deployment's column
@@ -73,10 +92,11 @@ def classify_column(table, column, distinct_count: int | None) -> FilterKind:
     if column.is_vector:
         return FilterKind.VECTOR_STORAGE
 
-    elif table.embedding_partner(column.name) is not None:
+    partner = table.embedding_partner(column.name)
+    if partner is not None and partner.name not in empty_vectors:
         return FilterKind.SEMANTIC
 
-    elif column.sql_type in NUMERIC_TYPES:
+    if column.sql_type in NUMERIC_TYPES:
         return FilterKind.OPERATOR
 
     elif column.sql_type in DATETIME_TYPES:
@@ -94,6 +114,7 @@ def classify_table(
     distinct_counts: dict[str, int] | None = None,
     dist_op: str = DEFAULT_DIST_OP,
     enum_values: dict[str, tuple[str, ...]] | None = None,
+    empty_vectors: frozenset[str] | set[str] | None = None,
 ) -> dict[str, ColumnFilter]:
     """Classify every column in a TableSchema.
 
@@ -115,6 +136,11 @@ def classify_table(
     ignored `genre` entirely, because nothing had told it that 'novel' was
     one of the ten things that column contains.
 
+    `empty_vectors` names the vector columns that hold nothing, so their
+    partners are not advertised as semantically searchable. Passing nothing
+    means "assume they are filled", which is the right default for a caller
+    that did not check - but the composition root does check.
+
     Vector columns are kept in the result rather than filtered out. They
     classify as VECTOR_STORAGE, so a model that asks about `embed_summary`
     gets told what it is instead of "column not found".
@@ -124,11 +150,13 @@ def classify_table(
     # known" and sends to TEXT.
     distinct_counts = distinct_counts or {}
     enum_values = enum_values or {}
+    empty_vectors = empty_vectors or frozenset()
 
     table_filter: dict[str, ColumnFilter] = {}
 
     for column in table.columns:
-        kind = classify_column(table, column, distinct_counts.get(column.name))
+        kind = classify_column(table, column, distinct_counts.get(column.name),
+                               empty_vectors)
         guidance = build_guidance(
             table, column, kind, dist_op, enum_values.get(column.name)
         )

@@ -187,6 +187,26 @@ class PostgresIntrospectionAdapter:
         )
         return int(rows[0]["n"]) if rows else 0
 
+    async def has_any_value(self, table: str, column: str) -> bool:
+        """Whether the column holds a single non-NULL value.
+
+        LIMIT 1 with no ORDER BY, so Postgres stops at the first row it finds
+        and the cost does not grow with the table. Asked once per vector
+        column at startup, which on this schema is eleven queries that each
+        return immediately.
+        """
+        try:
+            table_id = validate_identifier(table)
+            column_id = validate_identifier(column)
+        except ValueError as e:
+            raise DatabaseError(f"Refusing to introspect: {e}") from e
+
+        rows = await self._db.fetch(
+            f'SELECT 1 AS present FROM "{self._schema}"."{table_id}" '
+            f'WHERE "{column_id}" IS NOT NULL LIMIT 1'
+        )
+        return bool(rows)
+
     async def distinct_values(self, table: str, column: str, limit: int) -> tuple[str, ...]:
         """The values a column holds, ordered, capped at `limit`.
 

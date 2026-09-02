@@ -164,6 +164,47 @@ async def read_enum_values(
     return values, tuple(unread)
 
 
+async def find_empty_vector_columns(
+    schema_port: SchemaPort, table: TableSchema,
+) -> frozenset[str]:
+    """Which of this table's vector columns hold nothing at all.
+
+    The failure this exists for produces a confident wrong answer and no error
+    anywhere. A vector column that was created and never filled makes its
+    partner classify as SEMANTIC, so the model is told it may search it, and
+
+        ORDER BY embed_title_en <=> $1 LIMIT 10
+
+    comes back with zero rows - because a pgvector index does not index NULL.
+    The model reports that there are none. On this development database every
+    vector column is empty, so every semantic search returns nothing and looks
+    like an answer.
+
+    One LIMIT 1 query per vector column, which stops at the first row it
+    finds, so this costs nothing on a filled column and nothing on an empty
+    one either.
+
+    A probe that fails is treated as filled. Being unable to check is not
+    evidence of emptiness, and downgrading a working column on a transient
+    error would quietly remove the feature.
+    """
+    empty: set[str] = set()
+
+    for column in table.columns:
+        if not column.is_vector:
+            continue
+        try:
+            if not await schema_port.has_any_value(table.name, column.name):
+                empty.add(column.name)
+                log_event(logger, "startup.vector_empty", level=logging.WARNING,
+                          table=table.name, column=column.name)
+        except DatabaseError:
+            log_event(logger, "startup.vector_uncheckable", level=logging.WARNING,
+                      table=table.name, column=column.name)
+
+    return frozenset(empty)
+
+
 async def count_distinct_values(
     schema_port: SchemaPort, table: TableSchema,
 ) -> tuple[dict[str, int], tuple[str, ...]]:
@@ -216,6 +257,7 @@ async def load_agent_schema(
     filters: dict[str, dict[str, str]] = {}
     classified: dict[str, dict[str, ColumnFilter]] = {}
     unprobed: list[str] = []
+    unfilled: list[str] = []
 
     for table in described.values():
         key = table.name.lower()
@@ -225,14 +267,27 @@ async def load_agent_schema(
             unprobed.extend(failed)
             values, unread = await read_enum_values(schema_port, table, counts)
             unprobed.extend(unread)
+            empty_vectors = await find_empty_vector_columns(schema_port, table)
+            unfilled.extend(f"{table.name}.{name}" for name in sorted(empty_vectors))
         else:
-            counts, values = {}, {}
+            counts, values, empty_vectors = {}, {}, frozenset()
 
-        column_filters = classify_table(table, counts, dist_op, values)
+        column_filters = classify_table(table, counts, dist_op, values, empty_vectors)
 
         schema[key] = {"columns": render_columns(table, values)}
         classified[key] = column_filters
         filters[key] = {name: cf.guidance for name, cf in column_filters.items()}
+
+    if unfilled:
+        # The loudest line this system writes at startup, and it earns it.
+        # Every semantic search against these columns returns nothing and
+        # reads as an answer. The columns still work as text - they classify
+        # as TEXT now, where ILIKE finds what a vector search could not - but
+        # the feature is off until something fills them.
+        log_event(logger, "startup.vectors_unfilled", level=logging.WARNING,
+                  count=len(unfilled), columns=unfilled[:20],
+                  note="semantic search is disabled on these; they are "
+                       "searchable as text. Run scripts/backfill_embeddings.py.")
 
     if unprobed:
         # One summary line as well as the per-column ones, because this is the

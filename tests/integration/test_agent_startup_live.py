@@ -53,6 +53,21 @@ REGISTRY = "seeds/agents.example.json"
 PASSWORDS = {"app_catalog": "dev_catalog", "app_circulation": "dev_circulation"}
 
 
+# The two tests that need to write use `dev`; the agent roles hold SELECT and
+# could not, which is the property the rest of this file is checking.
+def dev_dsn() -> dict:
+    return dict(host=HOST, port=PORT, database=DATABASE,
+                user=os.getenv("PGUSER", "dev"),
+                password=os.getenv("PGPASSWORD", "dev"), timeout=3)
+
+
+# Must equal the width of the vector(N) columns, which is EMBEDDING_DIM, which
+# is what config reads. Imported rather than repeated: a literal here would
+# pass until somebody changed the column and then fail with a message about a
+# vector rather than about this line.
+EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "1024"))
+
+
 async def pool_as(role: str):
     try:
         return await asyncpg.create_pool(
@@ -194,12 +209,92 @@ async def test_the_loaded_schema_classifies_the_real_columns():
     finally:
         await pool.close()
 
-    assert kinds["summary"] == "SEMANTIC"        # embed_summary exists
     assert kinds["embed_summary"] == "VECTOR_STORAGE"
     assert kinds["page_count"] == "OPERATOR"
     assert kinds["added_at"] == "DATETIME"
     assert kinds["genre"] == "ENUM"              # 10 distinct, under the cutoff
     assert kinds["isbn"] == "TEXT"               # 420 distinct, over it
+
+    # `summary` has an embed_summary partner, so it depends on whether that
+    # column was ever filled - and on this database it was not, by any of the
+    # seeds. Asserting SEMANTIC unconditionally is what this test used to do,
+    # and it passed while every semantic search returned zero rows. The two
+    # branches are exercised directly in the two tests below.
+    assert kinds["summary"] in {"SEMANTIC", "TEXT"}
+
+
+async def test_an_unfilled_vector_column_is_not_advertised_as_searchable():
+    """Against the real database, where the embeddings are in fact empty.
+
+    seeds/002_generate_data.py creates every vector column and fills none of
+    them - 0 of 420 rows. A pgvector index does not index NULL, so
+
+        ORDER BY embed_summary <=> $1 LIMIT 10
+
+    returns zero rows and no error, and the model reports there are none.
+    """
+    dev = await asyncpg.connect(**dev_dsn())
+    try:
+        filled = await dev.fetchval(
+            "SELECT 1 FROM books WHERE embed_summary IS NOT NULL LIMIT 1")
+    finally:
+        await dev.close()
+
+    if filled:
+        pytest.skip("embed_summary has been backfilled; the empty case is covered "
+                    "in tests/unit/test_schema_bootstrap.py")
+
+    spec = await registry().get("catalog")
+    schema, pool = await port_for(spec)
+    try:
+        ready = await start_agent(spec, schema)
+    finally:
+        await pool.close()
+
+    summary = ready.schema.classified["books"]["summary"]
+    assert summary.kind.name == "TEXT"
+    # And told how to search it the way that does work.
+    assert "ILIKE" in ready.schema.filters["books"]["summary"]
+
+
+async def test_filling_one_row_makes_the_column_searchable_again():
+    """The other branch, on the same database.
+
+    A single non-NULL vector is enough: the check asks whether the column
+    holds anything, not whether it is complete. Which is the right question -
+    a partially filled column returns some rows rather than none, and the
+    model can work with that.
+
+    Written and removed as `dev`; the agent role holds SELECT and could not
+    do this, which is the point of the role split.
+    """
+    dev = await asyncpg.connect(**dev_dsn())
+    try:
+        already = await dev.fetchval(
+            "SELECT 1 FROM books WHERE embed_summary IS NOT NULL LIMIT 1")
+        if already:
+            pytest.skip("already backfilled; nothing to prove by adding one more")
+
+        book_id = await dev.fetchval("SELECT id FROM books ORDER BY id LIMIT 1")
+        vector = "[" + ",".join(["0.01"] * EMBEDDING_DIM) + "]"
+        await dev.execute(
+            "UPDATE books SET embed_summary = $1::vector WHERE id = $2",
+            vector, book_id)
+
+        spec = await registry().get("catalog")
+        schema, pool = await port_for(spec)
+        try:
+            ready = await start_agent(spec, schema)
+        finally:
+            await pool.close()
+
+        assert ready.schema.classified["books"]["summary"].kind.name == "SEMANTIC"
+    finally:
+        # Put the database back, whatever happened above - a leftover vector
+        # would silently change what every later test in this file sees.
+        await dev.execute("UPDATE books SET embed_summary = NULL WHERE id = $1",
+                          book_id)
+        await dev.close()
 
 
 async def test_startup_output_drives_a_real_sql_tool_adapter():
@@ -233,7 +328,12 @@ async def test_startup_output_drives_a_real_sql_tool_adapter():
     # came with feature 2. And the guidance carries the real values, read out
     # of the column at startup rather than named as a tool to call.
     assert "novel" in guidance["Genre"]
-    assert "embed_summary" in guidance["summary"]
+
+    # `summary` is SEMANTIC only when embed_summary holds something. On a
+    # database where the seeds never filled it, the guidance is the text one -
+    # which is correct, and is the one the model can actually act on.
+    assert ("embed_summary" in guidance["summary"]
+            or "ILIKE" in guidance["summary"])
     assert "rows" in rows
 
 
