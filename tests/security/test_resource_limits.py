@@ -163,3 +163,39 @@ def test_both_formatters_redact(formatter):
     record = logging.LogRecord("t", logging.INFO, __file__, 1,
                                "key sk-a-real-looking-key-000111222", (), None)
     assert "sk-a-real-looking-key-000111222" not in formatter.format(record)
+
+
+def test_a_cursor_this_system_issues_is_accepted_back():
+    """A cap that rejects what the system itself produced.
+
+    A cursor carries the query's resolved parameters, and a semantic query's
+    parameter is a 1024-dimension vector: 21,463 characters as a pgvector
+    literal, still ~13,600 after compression, because real embeddings are
+    random floats and do not compress. At 8,000 the second page of any
+    semantic search came back 422 from /run - and only the second page, since
+    nothing smaller ever reached the limit.
+    """
+    import random
+
+    from adapters.outbound.tools.sql_tool_adapter import _encode_cursor
+    from libs.agent_core.pgvector import to_vector_literal
+
+    random.seed(1)
+    vector = to_vector_literal([random.gauss(0, 0.05) for _ in range(1024)])
+    cursor = _encode_cursor({
+        "offset": 10,
+        "resolved_params": [vector, 10, 0],
+        "query": "SELECT id FROM books ORDER BY embed_summary <=> $1 "
+                 "LIMIT $2 OFFSET $3",
+        "count_query": "SELECT count(*) FROM books",
+        "count_params": [],
+    })
+
+    assert len(cursor) > 8_000, "the case this guards has stopped being real"
+    DelegateContext(cursor=cursor)   # must not raise
+
+
+def test_the_cursor_cap_still_stops_an_arbitrarily_large_one():
+    """Raised to match the decoder's own ceiling, not removed."""
+    with pytest.raises(ValidationError):
+        DelegateContext(cursor="c" * (MAX_CURSOR_CHARS + 1))

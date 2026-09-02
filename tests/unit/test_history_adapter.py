@@ -95,3 +95,38 @@ def test_a_trace_stored_as_plain_dicts_is_judged_the_same():
 def test_something_that_is_not_a_trace_is_not_valid():
     assert judge(None) == (False, "no trace")
     assert judge("a string") == (False, "no trace")
+
+
+def test_a_turn_the_budget_stopped_is_not_a_worked_example():
+    """The loop ends a budget-exhausted turn with an assistant message saying
+    so - which has the same shape as a real answer, text and all.
+
+    Without recognising it, these were stored `valid=true` and handed back by
+    get_memory as worked examples: the model would be shown, as a model
+    answer, a message reporting that no answer was found.
+    """
+    from domain.entities.agent_turn import GAVE_UP_PREFIX
+
+    valid, reason = judge([
+        ChatMessage(role=Role.ASSISTANT, content="",
+                    tool_calls=[ToolCall(id="1", name="db_execute")]),
+        ChatMessage(role=Role.TOOL, tool_call_id="1", content='{"rows": []}'),
+        ChatMessage(role=Role.ASSISTANT,
+                    content=f"{GAVE_UP_PREFIX} within 12 steps, so I do not "
+                            "have a reliable answer."),
+    ])
+    assert valid is False
+    assert reason == "gave up"
+
+
+def test_an_answer_that_merely_sounds_uncertain_is_still_valid():
+    """The check is the loop's own sentence, not a mood. A model hedging in
+    its own words has still answered."""
+    valid, _ = judge([
+        ChatMessage(role=Role.ASSISTANT, content="",
+                    tool_calls=[ToolCall(id="1", name="db_execute")]),
+        ChatMessage(role=Role.TOOL, tool_call_id="1", content='{"rows": [{"n": 12}]}'),
+        ChatMessage(role=Role.ASSISTANT,
+                    content="I could not find an exact match, but there are 12."),
+    ])
+    assert valid is True

@@ -11,6 +11,7 @@ from libs.agent_core.logging_setup import log_event
 
 from typing import Any
 import base64
+import inspect
 import json
 import logging
 import re
@@ -326,17 +327,26 @@ class SqlToolAdapter():
                       tool=tool_name, known=sorted(self._handlers))
             raise UnknownToolError(f"Unknown tool: {tool_name}")
 
+        # Argument checking is done *before* the call, not by catching
+        # TypeError around it.
+        #
+        # `except TypeError` wrapped the whole handler body, so a TypeError
+        # raised deep inside - a bug in this adapter, or an asyncpg row used
+        # wrongly - was reported to the model as "wrong arguments". The model
+        # would then retry the identical call, be told the same thing, and
+        # spend the iteration budget on a message that was never about its
+        # arguments. Binding the signature separates the two cases exactly.
         try:
-            return await handler(**args)
+            inspect.signature(handler).bind(**args)
         except TypeError as e:
-            # Wrong or missing arguments, which is a mistake the model can fix
-            # if it is told - so the message names the parameters rather than
-            # quoting a Python signature error.
             log_event(logger, "tool.bad_arguments", level=logging.WARNING,
                       tool=tool_name, given=sorted(args), detail=str(e))
             raise ToolExecutionError(
                 f"{tool_name}: wrong arguments ({e}). Given: {sorted(args)}."
             ) from e
+
+        try:
+            return await handler(**args)
         except Exception as e:
             raise ToolExecutionError(f"Error {e} while executing tool: {tool_name}") from e
 

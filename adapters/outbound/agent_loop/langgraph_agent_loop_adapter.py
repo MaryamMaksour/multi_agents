@@ -4,7 +4,11 @@ from typing import TypedDict, Annotated
 from operator import add as add_messages
 
 from domain.entities.chat_message import ChatMessage, Role, ToolCall
-from domain.entities.agent_turn import AgentTurnResult, PaginationState
+from domain.entities.agent_turn import (
+    GAVE_UP_PREFIX,
+    AgentTurnResult,
+    PaginationState,
+)
 from domain.exceptions import UnknownToolError, ToolExecutionError
 from domain.ports.llm_port import LLMPort
 from domain.ports.tool_port import ToolPort
@@ -29,6 +33,42 @@ logger = logging.getLogger(__name__)
 # execute, answer, with room for a correction or two. A question that needs
 # more than twelve is not converging, and stopping is the better outcome.
 DEFAULT_MAX_ITERATIONS = 12
+
+
+def _drop_unanswered_tool_calls(messages: list[ChatMessage]) -> list[ChatMessage]:
+    """Remove tool calls that never got a result, and messages left empty.
+
+    Written as a sweep over the whole list rather than a special case for the
+    last message: the budget is the way this happens today, but "the model
+    asked and nothing answered" is the shape of the bug, and a future path
+    that produces it should not need to remember this.
+
+    A message that had only the unanswered call and no text is dropped
+    entirely - an assistant message with neither content nor tool calls is
+    not something to send back to a provider.
+    """
+    answered = {m.tool_call_id for m in messages if m.role is Role.TOOL}
+
+    kept: list[ChatMessage] = []
+    for message in messages:
+        if message.role is not Role.ASSISTANT or not message.tool_calls:
+            kept.append(message)
+            continue
+
+        live = [call for call in message.tool_calls if call.id in answered]
+        if len(live) == len(message.tool_calls):
+            kept.append(message)
+            continue
+
+        if not live and not (message.content or "").strip():
+            continue  # nothing left in it
+
+        kept.append(ChatMessage(
+            role=message.role, content=message.content,
+            tool_calls=live or None, tool_call_id=message.tool_call_id,
+            name=message.name, reasoning=message.reasoning,
+        ))
+    return kept
 
 
 def _result_shape(result) -> dict:
@@ -90,7 +130,16 @@ class LangGraphAgentLoopAdapter:
                 ToolCall(name=call.get("name"), args=call.get("args", {}), id=call.get("id"))
                 for call in msg.tool_calls
             ] or None
-            return ChatMessage(role=Role.ASSISTANT, content=msg.content, tool_calls=tool_calls)
+            # additional_kwargs is LangChain's own carrier for fields it does
+            # not model. Without this the reasoning captured by the LLM
+            # adapter is dropped the moment it crosses into the graph, so
+            # QWEN_ENABLE_THINKING, the history `reasoning` column and
+            # show_history.py's THINKS block all stayed empty - the feature
+            # was wired at both ends and severed in the middle.
+            return ChatMessage(
+                role=Role.ASSISTANT, content=msg.content, tool_calls=tool_calls,
+                reasoning=(msg.additional_kwargs or {}).get("reasoning"),
+            )
 
         raise ValueError(f"Unsupported LangChain message type: {type(msg)}")
         
@@ -111,7 +160,13 @@ class LangGraphAgentLoopAdapter:
                     {"name": call.name, "args": call.args, "id": call.id}
                     for call in (msg.tool_calls or [])
                 ]
-                return AIMessage(content=msg.content or "", tool_calls=tool_calls)
+                return AIMessage(
+                    content=msg.content or "", tool_calls=tool_calls,
+                    # Carried, not sent: _to_provider_message never reads it,
+                    # so this survives the graph without reaching the model.
+                    additional_kwargs=({"reasoning": msg.reasoning}
+                                       if msg.reasoning else {}),
+                )
 
            raise ValueError(f"Unsupported  message type: {type(msg)}")
            
@@ -145,6 +200,15 @@ class LangGraphAgentLoopAdapter:
             log_event(logger, "tool.page_limit", level=logging.WARNING,
                       tool=tool_name, limit=self._max_pages_per_tool)
         else:
+            # Every log line here sits *outside* the `with`, and that is not
+            # style. Timer.ms is written in __exit__, so a line inside the
+            # block reads it before it has been set - every tool.result,
+            # tool.error and tool.crashed reported ms=0.0, which is worse than
+            # no timing at all because it looks like a measurement.
+            event, fields = "tool.result", {}
+            level = logging.INFO
+            crashed = False
+
             with Timer() as timer:
                 try:
                     result = await self._tools.call_tool(tool_name=tool_name, args=args)
@@ -154,21 +218,22 @@ class LangGraphAgentLoopAdapter:
                     # is invisible. A tool failing every turn looks exactly
                     # like a model choosing not to use it.
                     result = {"error": str(e)}
-                    log_event(logger, "tool.error", level=logging.WARNING,
-                              tool=tool_name, ms=timer.ms, error=str(e))
+                    event, level, fields = "tool.error", logging.WARNING, {"error": str(e)}
                 except Exception as e:
                     # An adapter that raised something outside the domain's
                     # error types. Same treatment - the turn continues - but
                     # at ERROR with the frame, because it is a bug here rather
                     # than a mistake by the model.
                     result = {"error": f"{type(e).__name__}: {e}"}
-                    log_event(logger, "tool.crashed", level=logging.ERROR,
-                              tool=tool_name, ms=timer.ms, error=type(e).__name__)
-                    logger.error("tool %s raised an unexpected error", tool_name,
-                                 exc_info=True)
+                    event, level = "tool.crashed", logging.ERROR
+                    fields, crashed = {"error": type(e).__name__}, True
                 else:
-                    log_event(logger, "tool.result", tool=tool_name, ms=timer.ms,
-                              **_result_shape(result))
+                    fields = _result_shape(result)
+
+            log_event(logger, event, level=level, tool=tool_name, ms=timer.ms, **fields)
+            if crashed:
+                logger.error("tool %s raised an unexpected error", tool_name,
+                             exc_info=True)
 
         pagination_update = None
         if isinstance(result, dict) and "has_more" in result:
@@ -249,6 +314,18 @@ class LangGraphAgentLoopAdapter:
         result_messages = [self._to_chat_message(m)
                            for m in state["messages"][len(messages):]]
 
+        # A tool call with no reply must not leave this method.
+        #
+        # When the budget stops the loop, it stops *after* the model has asked
+        # for another tool and *before* that tool runs - so the last assistant
+        # message carries a tool_call nothing ever answered. RunAgentTurn
+        # persists these messages into the orchestrator's conversation window,
+        # and every provider requires each tool_call to be followed by its
+        # result. The next question in that session would be rejected with a
+        # 400 before reaching the model, and the one after it, for the three
+        # days the window lives. One stopped turn poisoned the session.
+        result_messages = _drop_unanswered_tool_calls(result_messages)
+
         # A turn must end with something a person can read. It normally does -
         # the loop ends when the model answers in prose - but not when the
         # budget stopped it mid-tool-call, and an empty answer is the one
@@ -261,10 +338,9 @@ class LangGraphAgentLoopAdapter:
             result_messages.append(ChatMessage(
                 role=Role.ASSISTANT,
                 content=(
-                    "I could not finish this question within "
-                    f"{self._max_iterations} steps, so I do not have a reliable "
-                    "answer. Asking for one thing at a time usually gets "
-                    "further."
+                    f"{GAVE_UP_PREFIX} within {self._max_iterations} steps, so "
+                    "I do not have a reliable answer. Asking for one thing at "
+                    "a time usually gets further."
                 ),
             ))
 

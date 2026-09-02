@@ -163,7 +163,7 @@ def check_sub_agents(names: list[str]) -> list[str]:
     reported as broken.
     """
     unreachable = []
-    for index, name in enumerate(names):
+    for name in names:
         port = SUB_AGENT_PORTS.get(name)
         if port is None:
             continue

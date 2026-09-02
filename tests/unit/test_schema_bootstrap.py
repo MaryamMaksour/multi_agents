@@ -44,7 +44,13 @@ AUTHORS = TableSchema(name="authors", columns=(
     ColumnSchema("name_en", "text"),
 ))
 
-COUNTS = {("books", "genre"): 10, ("books", "isbn"): 420, ("authors", "name_en"): 28}
+COUNTS = {("books", "genre"): 10, ("books", "isbn"): 420, ("authors", "name_en"): 28,
+          # 97 of 420 on the real database. Named here because once an empty
+          # embed partner demotes `summary` out of SEMANTIC it becomes a
+          # column the probe actually reaches, and the fake's default of 1
+          # would make it an ENUM of one value - true of the fake, and
+          # nothing like a summary.
+          ("books", "summary"): 97}
 
 
 class FakeSchemaPort:
@@ -381,6 +387,11 @@ async def test_an_empty_vector_column_stops_its_partner_being_semantic():
     schema = await load_agent_schema(port, tables=("books",))
 
     assert schema.classified["books"]["summary"].kind is FilterKind.TEXT
+    # And it was *probed*, which is the second half of the same fix: the
+    # demotion has to happen before the probes choose what to count, or the
+    # column is skipped and can only ever be TEXT by default rather than by
+    # measurement.
+    assert ("books", "summary") in port.probes
 
 
 async def test_a_filled_vector_column_still_makes_its_partner_semantic():

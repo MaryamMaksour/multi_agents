@@ -118,10 +118,19 @@ def create_app(open_runtime_fn=open_runtime) -> FastAPI:
                 logger.critical("startup.failed", exc_info=True)
                 raise
 
-        # Bound for the life of the process, not per request: every line this
-        # container writes says which agent wrote it, which is what makes one
-        # `docker compose logs` readable across five of them.
-        bind(agent=runtime.agent.spec.name if runtime.agent else "orchestrator")
+        # Recorded on the app, and bound per request by the middleware.
+        #
+        # bind() here alone does not work, and the way it fails is quiet:
+        # contextvars are inherited by tasks *created from* the current one,
+        # and uvicorn runs the lifespan and each request as siblings under the
+        # server task. So the value set here is invisible to every request
+        # handler, and every request line loses the agent name - while the
+        # startup lines keep it, and a test using TestClient passes because it
+        # shares one context.
+        app.state.agent_label = (
+            runtime.agent.spec.name if runtime.agent else "orchestrator"
+        )
+        bind(agent=app.state.agent_label)   # for the startup lines below
 
         log_event(
             logger, "startup.ready", ms=timer.ms, kind=runtime.kind,
@@ -162,7 +171,8 @@ def create_app(open_runtime_fn=open_runtime) -> FastAPI:
         """
         incoming = request.headers.get("x-request-id", "")
         request_id = incoming[:64] if incoming else new_request_id()
-        tokens = bind(request_id=request_id)
+        tokens = bind(request_id=request_id,
+                      agent=getattr(request.app.state, "agent_label", ""))
 
         level = logging.DEBUG if request.url.path == "/health" else logging.INFO
         log_event(logger, "http.request", level=level,

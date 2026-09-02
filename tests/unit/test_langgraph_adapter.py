@@ -410,3 +410,83 @@ async def test_a_normal_turn_is_untouched_by_the_budget():
         [ChatMessage(role=Role.USER, content="q")])
 
     assert result.messages[-1].content == "There are 12."
+
+
+# --------------------------------------------------------------------------
+# what the loop is allowed to hand back
+# --------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_stopped_turn_leaves_no_unanswered_tool_call():
+    """The bug that poisoned a session for three days.
+
+    The budget stops the loop *after* the model has asked for another tool and
+    *before* that tool runs, so the last assistant message carried a tool_call
+    nothing answered. RunAgentTurn writes these messages into the
+    orchestrator's conversation window, and every provider requires each
+    tool_call to be followed by its result - so the next question in that
+    session was rejected with a 400 before reaching the model, and so was the
+    one after it, for as long as the window lived.
+    """
+    result = await adapter(llm=NeverStops(), tools=FakeTools(),
+                           max_iterations=3).run(
+        [ChatMessage(role=Role.USER, content="q")])
+
+    issued = {call.id for m in result.messages for call in (m.tool_calls or [])}
+    answered = {m.tool_call_id for m in result.messages if m.role is Role.TOOL}
+    assert issued <= answered, f"unanswered: {sorted(issued - answered)}"
+
+
+@pytest.mark.asyncio
+async def test_a_normal_turn_keeps_every_tool_call_it_made():
+    """The sweep must not touch a turn that completed - dropping a call whose
+    result is right there would rewrite the trace."""
+    llm = FakeLLM([
+        ChatMessage(role=Role.ASSISTANT, content="",
+                    tool_calls=[ToolCall(id="c1", name="db_execute", args={})]),
+        ChatMessage(role=Role.ASSISTANT, content="There are 12."),
+    ])
+    result = await adapter(llm=llm, tools=FakeTools()).run(
+        [ChatMessage(role=Role.USER, content="q")])
+
+    assert [c.id for m in result.messages for c in (m.tool_calls or [])] == ["c1"]
+
+
+@pytest.mark.asyncio
+async def test_reasoning_survives_the_round_trip_through_the_graph():
+    """It was captured by the LLM adapter and dropped on the way into the
+    graph, so QWEN_ENABLE_THINKING, the history column and show_history.py's
+    THINKS block were all wired to something that never arrived."""
+    llm = FakeLLM([ChatMessage(role=Role.ASSISTANT, content="There are 12.",
+                               reasoning="the question says novels")])
+    result = await adapter(llm=llm, tools=FakeTools()).run(
+        [ChatMessage(role=Role.USER, content="q")])
+
+    assert result.messages[-1].reasoning == "the question says novels"
+
+
+@pytest.mark.asyncio
+async def test_tool_timings_are_measured_rather_than_zero(caplog):
+    """Timer.ms is written in __exit__, so a log line inside the `with` read
+    it before it was set: every tool.result reported ms=0.0, which is worse
+    than no timing because it looks like a measurement."""
+    import logging as _logging
+
+    class SlowTools(FakeTools):
+        async def call_tool(self, tool_name, args):
+            import asyncio
+            await asyncio.sleep(0.02)
+            return {"rows": []}
+
+    llm = FakeLLM([
+        ChatMessage(role=Role.ASSISTANT, content="",
+                    tool_calls=[ToolCall(id="c1", name="db_execute", args={})]),
+        ChatMessage(role=Role.ASSISTANT, content="done"),
+    ])
+    with caplog.at_level(_logging.INFO):
+        await adapter(llm=llm, tools=SlowTools()).run(
+            [ChatMessage(role=Role.USER, content="q")])
+
+    timed = [r for r in caplog.records if r.getMessage() == "tool.result"]
+    assert timed, "no tool.result line was logged"
+    assert timed[0].ms > 0

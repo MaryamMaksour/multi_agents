@@ -35,9 +35,21 @@ MAX_QUESTION_CHARS = 8_000
 MAX_SESSION_ID_CHARS = 200
 
 # A cursor is issued by this system - compressed, base64 - and handed back
-# unchanged. The cap is on what a caller may return, not on what is produced;
-# a longer one was never issued here.
-MAX_CURSOR_CHARS = 8_000
+# unchanged. The cap is on what a caller may return, not on what is produced.
+#
+# 8,000 was wrong, and wrong in the way a cap is worst: it rejected cursors
+# this system had just issued. A cursor carries the query's resolved
+# parameters, and a semantic query's parameter is a 1024-dimension vector -
+# 21,463 characters as a pgvector literal, still 13,671 after compression,
+# because real embeddings are random floats and do not compress. So the
+# second page of any semantic search came back 422 from /run, and only the
+# second page: nothing smaller ever reached the limit, and the first page of
+# every query worked.
+#
+# Matched to _decode_cursor's own 65,536-byte ceiling, which is the limit
+# that actually protects anything - it stops a zip bomb during decompression,
+# where this only measures the string.
+MAX_CURSOR_CHARS = 65_536
 
 
 class DelegateContext(BaseModel):

@@ -34,6 +34,7 @@ def judge(messages: Any) -> tuple[bool, str]:
     three of the same one. On failure it is the error instead, which groups
     the failures by what went wrong.
     """
+    from domain.entities.agent_turn import GAVE_UP_PREFIX
     from domain.entities.chat_message import ChatMessage, Role
 
     def role_of(message):
@@ -52,13 +53,16 @@ def judge(messages: Any) -> tuple[bool, str]:
     if not isinstance(messages, list):
         return False, "no trace"
 
-    tools, failure, answered = [], "", False
+    tools, failure, answered, gave_up = [], "", False, False
     for message in messages:
         role = role_of(message)
         if role == "assistant":
             tools.extend(calls_of(message))
-            if str(content_of(message)).strip():
+            text = str(content_of(message)).strip()
+            if text:
                 answered = True
+                if text.startswith(GAVE_UP_PREFIX):
+                    gave_up = True
         elif role == "tool":
             text = str(content_of(message))
             # The loop hands tool failures back to the model as a result
@@ -70,6 +74,13 @@ def judge(messages: Any) -> tuple[bool, str]:
         return False, failure
     if not answered:
         return False, "no answer"
+    if gave_up:
+        # Text, but not an answer. The loop ends a budget-exhausted turn with
+        # a message saying so, which has the same shape as a real reply - so
+        # without this these were stored valid and handed back by get_memory
+        # as worked examples, teaching the model a pattern whose conclusion is
+        # that it could not conclude.
+        return False, "gave up"
     return True, ">".join(tools) if tools else "answered directly"
 
 

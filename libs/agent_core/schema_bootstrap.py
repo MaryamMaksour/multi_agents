@@ -106,7 +106,9 @@ def render_columns(
     return "\n".join(lines)
 
 
-def columns_needing_a_count(table: TableSchema) -> tuple[str, ...]:
+def columns_needing_a_count(
+    table: TableSchema, empty_vectors: frozenset[str] | set[str] = frozenset(),
+) -> tuple[str, ...]:
     """Which columns are worth a distinct-count probe.
 
     Asks the classifier what each column would be with no count at all. Only
@@ -116,15 +118,21 @@ def columns_needing_a_count(table: TableSchema) -> tuple[str, ...]:
     Derived rather than restated on purpose: written out as "text columns
     without an embedding partner" this would be a second copy of the
     precedence chain, free to drift from the real one.
+
+    `empty_vectors` has to be passed for the same reason it is derived: a
+    column whose embed partner holds nothing is TEXT, not SEMANTIC, and
+    therefore is worth counting. Without it that column was skipped here and
+    could never be classified ENUM, however few values it turned out to hold.
     """
     return tuple(
         c.name for c in table.columns
-        if classify_column(table, c, None) is FilterKind.TEXT
+        if classify_column(table, c, None, empty_vectors) is FilterKind.TEXT
     )
 
 
 async def read_enum_values(
     schema_port: SchemaPort, table: TableSchema, counts: dict[str, int],
+    empty_vectors: frozenset[str] | set[str] = frozenset(),
 ) -> tuple[dict[str, tuple[str, ...]], tuple[str, ...]]:
     """Read the values of the columns that turned out to be enums.
 
@@ -143,7 +151,8 @@ async def read_enum_values(
     unread: list[str] = []
 
     for column in table.columns:
-        if classify_column(table, column, counts.get(column.name)) is not FilterKind.ENUM:
+        if classify_column(table, column, counts.get(column.name),
+                           empty_vectors) is not FilterKind.ENUM:
             continue
         try:
             values[column.name] = await schema_port.distinct_values(
@@ -207,6 +216,7 @@ async def find_empty_vector_columns(
 
 async def count_distinct_values(
     schema_port: SchemaPort, table: TableSchema,
+    empty_vectors: frozenset[str] | set[str] = frozenset(),
 ) -> tuple[dict[str, int], tuple[str, ...]]:
     """Probe the columns that need it. Returns the counts and the failures.
 
@@ -216,7 +226,7 @@ async def count_distinct_values(
     counts: dict[str, int] = {}
     unprobed: list[str] = []
 
-    for column in columns_needing_a_count(table):
+    for column in columns_needing_a_count(table, empty_vectors):
         try:
             counts[column] = await schema_port.distinct_count(table.name, column)
         except DatabaseError:
@@ -263,12 +273,22 @@ async def load_agent_schema(
         key = table.name.lower()
 
         if probe_cardinality:
-            counts, failed = await count_distinct_values(schema_port, table)
-            unprobed.extend(failed)
-            values, unread = await read_enum_values(schema_port, table, counts)
-            unprobed.extend(unread)
+            # Which vectors are empty is settled first, because both passes
+            # below decide what to probe by asking the classifier - and the
+            # classifier's answer changes once it knows. Run the other way
+            # round, a column whose embed partner is empty still looked
+            # SEMANTIC to columns_needing_a_count, so it was never counted,
+            # so it could only ever land on TEXT and never on ENUM however
+            # few values it held.
             empty_vectors = await find_empty_vector_columns(schema_port, table)
             unfilled.extend(f"{table.name}.{name}" for name in sorted(empty_vectors))
+
+            counts, failed = await count_distinct_values(
+                schema_port, table, empty_vectors)
+            unprobed.extend(failed)
+            values, unread = await read_enum_values(
+                schema_port, table, counts, empty_vectors)
+            unprobed.extend(unread)
         else:
             counts, values, empty_vectors = {}, {}, frozenset()
 

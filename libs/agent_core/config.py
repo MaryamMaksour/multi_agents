@@ -53,7 +53,24 @@ QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen-plus")
 # question takes the same route through the tools most of the time - which is
 # what makes a wrong answer worth investigating rather than shrugging at.
 QWEN_TEMPERATURE = float(os.getenv("QWEN_TEMPERATURE", "0.1"))
-QWEN_MAX_TOKENS = int(os.getenv("QWEN_MAX_TOKENS", "32000"))
+# The cap on what the model may *write*, not on what it may read - so it
+# bounds one reply, not the conversation.
+#
+# 32000 here was rejected outright by qwen-max:
+#
+#     400 InternalError.Algo.InvalidParameter:
+#     Range of max_tokens should be [1, 8192]
+#
+# which failed every question on the model this project was moving to. The
+# limit is per model and not discoverable before the call, so the default is
+# the value the whole family accepts. Nothing here needs more: an answer is a
+# sentence and a tool call is a short JSON object, and the one case that ever
+# approaches a large output - a page of rows - is capped at 100 rows by
+# db_execute instead.
+#
+# Raise it for a model that allows more; a value the model rejects fails the
+# call rather than being clamped.
+QWEN_MAX_TOKENS = int(os.getenv("QWEN_MAX_TOKENS", "8192"))
 
 # Whether to ask the model to think before answering, where it can.
 #
