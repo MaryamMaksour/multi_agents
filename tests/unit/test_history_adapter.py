@@ -74,3 +74,9 @@ async def test_get_memory_reads_valid_from_the_final_row():
         assert "f.valid" in sql
         assert "u.valid" not in sql
         assert "COALESCE(u.reason, u.turn_id::text)" in sql
+        # Both halves return the trace - a bad example without its failure
+        # tells the model nothing to avoid.
+        assert "f.payload AS trace" in sql
+        # A turn_id is shared by every delegate call of one orchestrator turn;
+        # the session is what makes the pair unique.
+        assert "f.session_id = u.session_id" in sql

@@ -165,8 +165,12 @@ class PostgresHistoryAdapter:
         """Retrieve semantically similar past turns from the history.
 
         Returns up to 3 valid examples (question + reasoning trace) and up to
-        3 invalid examples (question + failure reason). Validity is the
-        `assistant_final` row's `valid`, written by log_assistant_final.
+        3 invalid examples (question + trace, so the failure is visible).
+        Validity is the `assistant_final` row's `valid`, written by
+        log_assistant_final. Question and answer are paired on (session_id,
+        turn_id): one orchestrator turn can call the same sub-agent more than
+        once with the same turn_id, and each of those calls has its own
+        session.
         Examples are deduplicated by `reason` when one has been assigned, and
         otherwise by turn - a NULL reason must not collapse every untagged
         turn into a single example.
@@ -183,7 +187,9 @@ class PostgresHistoryAdapter:
                         u.payload, f.valid, u.reason, f.time, u.event_type, f.payload AS trace,
                         u.user_message_embed <=> $1::vector AS distance
                     FROM {self._table} u
-                    JOIN {self._table} f ON f.turn_id = u.turn_id AND f.event_type = 'assistant_final'
+                    JOIN {self._table} f
+                      ON f.session_id = u.session_id AND f.turn_id = u.turn_id
+                     AND f.event_type = 'assistant_final'
                     WHERE u.event_type = 'user'
                       AND f.valid = true
                       AND u.created_at >= NOW() - INTERVAL '3 days'
@@ -197,10 +203,12 @@ class PostgresHistoryAdapter:
             bad_sql = f"""
                 SELECT * FROM (
                     SELECT DISTINCT ON (COALESCE(u.reason, u.turn_id::text))
-                        u.payload, f.valid, u.reason, f.time, u.event_type,
+                        u.payload, f.valid, u.reason, f.time, u.event_type, f.payload AS trace,
                         u.user_message_embed <=> $1::vector AS distance
                     FROM {self._table} u
-                    JOIN {self._table} f ON f.turn_id = u.turn_id AND f.event_type = 'assistant_final'
+                    JOIN {self._table} f
+                      ON f.session_id = u.session_id AND f.turn_id = u.turn_id
+                     AND f.event_type = 'assistant_final'
                     WHERE u.event_type = 'user'
                       AND f.valid = false
                       AND u.created_at >= NOW() - INTERVAL '3 days'
