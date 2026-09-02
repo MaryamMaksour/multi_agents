@@ -1,0 +1,61 @@
+{
+  "_comment": [
+    "Questions with answers that are facts about seeds/, not opinions.",
+    "",
+    "Each expects a number the database can be asked for directly, so the",
+    "check is `is this number in the answer` rather than a judgement about",
+    "wording - no second model, nothing to disagree with.",
+    "",
+    "`wrong` lists the numbers a plausible mistake produces. Naming them is",
+    "the point: 129 is the answer to 'how many Arabic books', which is a",
+    "different question and looks correct. Without it, a wrong run and a",
+    "confused run are the same red mark."
+  ],
+
+  "questions": [
+    {
+      "id": "arabic_novels_under_300",
+      "ask": "كم رواية عربية عندنا أقل من ٣٠٠ صفحة؟",
+      "sql": "SELECT count(*) FROM books WHERE language='Arabic' AND genre='novel' AND page_count<300",
+      "tests": "a category named in one language, stored in another",
+      "wrong": {
+        "SELECT count(*) FROM books WHERE language='Arabic' AND page_count<300":
+          "counted books, not novels - the genre column was left out"
+      }
+    },
+    {
+      "id": "english_novels_under_400",
+      "ask": "كم رواية إنكليزية عندنا أقل من ٤٠٠ صفحة؟",
+      "sql": "SELECT count(*) FROM books WHERE language='English' AND genre='novel' AND page_count<400",
+      "tests": "the same shape again, to catch inconsistency between identical questions",
+      "wrong": {
+        "SELECT count(*) FROM books WHERE language='English' AND page_count<400":
+          "counted books, not novels"
+      }
+    },
+    {
+      "id": "authors_over_three_books",
+      "ask": "Which authors have more than three books in the catalogue?",
+      "sql": "SELECT count(*) FROM (SELECT author_id FROM books GROUP BY author_id HAVING count(*)>3) x",
+      "tests": "a join across a declared foreign key, and aggregation rather than paging"
+    },
+    {
+      "id": "poetry_in_arabic",
+      "ask": "كم ديوان شعر عربي عندنا؟",
+      "sql": "SELECT count(*) FROM books WHERE language='Arabic' AND genre='poetry'",
+      "tests": "a second enum value, worded differently again"
+    },
+    {
+      "id": "overdue_loans",
+      "ask": "How many loans are overdue?",
+      "sql": "SELECT count(*) FROM loans WHERE status='overdue'",
+      "tests": "routing to the other agent, and an enum on its tables"
+    },
+    {
+      "id": "books_before_1970",
+      "ask": "How many books were published before 1970?",
+      "sql": "SELECT count(*) FROM books WHERE publication_year<1970",
+      "tests": "a plain numeric comparison with no category to miss"
+    }
+  ]
+}
