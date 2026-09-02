@@ -66,24 +66,6 @@ ordinary text columns and no vectors.
 
 ---
 
-## `get_lsit_values` is misspelled
-
-**The constraint.** It is a dispatch key in `_handlers`, a name in
-`get_tool_schemas`, and a method name. Renaming one without the others turns
-every call into an `UnknownToolError` at runtime rather than a failure at
-startup, so all three move together or none do.
-
-**It has since spread.** The ENUM guidance in `build_guidance` names the tool
-in the sentence the model reads, so the rename is now four places, and there
-are tests in `tests/unit/test_filter_classifier.py` and
-`tests/security/test_untrusted_input.py` asserting the current spelling on
-purpose - a "corrected" name in the guidance alone would send the model to a
-tool that does not exist.
-
-**Comes back when** something else is already touching that adapter.
-
----
-
 ## One sample value in the guidance for TEXT columns
 
 **The idea.** For a high-cardinality text column like `shelf_code` (399
@@ -111,42 +93,6 @@ its own, not a field on a form.
 
 ---
 
-## `get_memory` filters on a column nothing writes
-
-**The bug, and it is not small.** `PostgresHistoryAdapter.get_memory` selects
-past turns `WHERE u.valid = true` for its good examples and `WHERE u.valid =
-false` for its bad ones. Nothing anywhere writes `valid`. It stays NULL,
-`NULL = true` is NULL, and both halves match no rows.
-
-So the memory feature currently costs an embedding call on every single turn
-and returns an empty list, and `RunAgentTurn` appends that empty list to the
-system prompt as `"History: []"`.
-
-**Why it is deferred rather than fixed.** The column is described in the code
-as "manually-assigned", which means the original design had a person marking
-turns good or bad - and that is a product decision, not a bug fix. The options
-are a human review step, an automatic rule (a turn whose trace contains an
-error is invalid), or dropping the distinction. Picking one without knowing
-which is worse than leaving it visible.
-
-**Cheap thing to do first, whichever wins:** stop paying for the embedding
-when the query cannot match anything. It is still one embedding call per turn
-for a query that returns nothing.
-
-**Less urgent than it was.** The examples get_memory would have supplied are
-now written into the sub-agent prompt as a fixed method - see
-`SUB_AGENT_METHOD` in libs/agent_core/prompts.py. That covers the case
-get_memory could never have covered anyway: a new deployment has no history,
-so an agent was at its worst on the first question anybody asked it.
-
-**Related, and already done:** a failed memory lookup no longer takes the turn
-down with it. It used to - an embedding model the account could not reach
-returned AccessDenied, and because the memory lookup is the first thing a turn
-does, every question failed with a 500 including the ones needing no memory at
-all.
-
----
-
 ## `get_table_records` is offered to the model and cannot work
 
 **The problem.** The handler runs:
@@ -170,23 +116,7 @@ exactly this one tool - withheld on purpose rather than lost.
 probably right - `db_execute` already combines a vector distance with ordinary
 predicates in one WHERE clause, which is strictly more useful. Rebuilding is
 only worth it if "show me what rows look like" turns out to be something the
-model actually needs and cannot get from `get_lsit_values` plus a LIMIT.
-
----
-
-## `lsit_values` is a dead constructor parameter
-
-`SqlToolAdapter.__init__` takes it and stores it as `self._lsit_values`, and
-nothing ever reads it.
-
-**Left in place on purpose,** because it is almost certainly the seam for
-"listing a column's values in the filter guidance" above - values read once at
-startup and handed to the adapter rather than fetched per call. Removing it
-now and adding it back later is churn.
-
-**Comes back with** that entry. If that idea is dropped instead, this goes
-with it - and the misspelling carried in the name makes it worth doing
-alongside the rename.
+model actually needs and cannot get from `get_list_values` plus a LIMIT.
 
 ---
 
@@ -222,40 +152,109 @@ honest console is one that shows drafts and says they are drafts.
 
 ---
 
-## An empty embedding column is classified SEMANTIC, and answers wrongly
+# Resolved
 
-**The worst-shaped bug found so far**, because it produces a confident wrong
-answer rather than an error.
+What was parked here and has since been done, with what it turned out to be.
+Kept rather than deleted: several of these were worse than the entry that
+described them, and that is the part worth remembering.
 
-`classify_column` calls a column SEMANTIC when an `embed_<name>` partner
-*exists*. It does not ask whether that column contains anything. On a
-database where the columns have been created but not backfilled - which is
-every database before the backfill runs, including `seeds/` today, where
-`002_generate_data.py` fills 420 books and zero embeddings - the guidance
-tells the model the column is searchable by meaning.
+---
 
-Then this happens, and it is correct pgvector behaviour rather than a bug in
-it. `seeds/001_schema.sql` builds an index on each embed_ column, and a
-pgvector index does not index NULL rows, so Postgres plans an index scan for
-`ORDER BY col <=> $1` and the unembedded rows are simply absent:
+## `get_lsit_values` was misspelled — fixed
 
-```
-Index Scan using idx_books_embed_summary on books
-```
+The entry called it a rename across four places and waited for something else
+to be touching that adapter. It was more than a rename.
 
-Zero rows. No error, no warning. The model reports "there are no books about
-the sea" when the truth is "nothing has been embedded". Pinned by
-`test_ordering_by_distance_on_an_unembedded_table_returns_nothing`.
+The name is read by the model and written back by it, and a model that has
+seen "list" a great many more times than "lsit" wrote the correct spelling
+often enough to lose a step to `UnknownToolError` each time - a paid-for round
+trip spent on a typo. The tool is declared as `get_list_values`; the old
+spelling still dispatches, so a conversation window recorded before the rename
+replays and a model that writes the old name is answered rather than refused.
 
-**The fix, and it is small:** one `count(embed_col)` per embedding column at
-startup - the same shape as the distinct-count probe already there - and a
-column whose partner is empty classifies as TEXT or ENUM instead. The
-guidance then offers exact matching, which works, rather than semantic
-search, which silently cannot.
+---
 
-**Comes back with** the backfill, because the two are the same feature seen
-from either end: one fills the columns, this one is honest about them until
-it has.
+## `get_memory` filtered on a column nothing writes — fixed
+
+Worse than the entry said. `valid` and `reason` were filtered on and written
+by nothing, so all 1,084 rows in the development history had `valid` NULL:
+`valid = true` matched nothing, `valid = false` matched nothing, and
+`get_memory` returned an empty list for **every** question - after paying for
+an embedding call to build a vector it then compared against no rows. The
+`DISTINCT ON (reason)` was the same, so even with `valid` set the dedupe key
+would have collapsed everything to one row.
+
+`judge()` in the history adapter now writes both, from the trace
+`log_assistant_final` is already handed. A turn is valid when it produced a
+real answer and no tool failed on the way; `reason` is the sequence of tools
+it used, so three examples show three approaches rather than the same one
+three times. The verdict lives on the `assistant_final` row, because that is
+the row that knows how the turn went.
+
+---
+
+## `lsit_values` was a dead constructor parameter — fixed
+
+Not removed, as the entry expected: made optional and documented as ignored.
+The seam it was reserving turned out to exist already - the enum values the
+model is shown come from the startup probe through `filters`, and
+`_get_list_values` reads the rest from the database. Callers that still pass
+it are unaffected; new ones need not know about it.
+
+---
+
+## An empty embedding column classified SEMANTIC — fixed
+
+The one on this list that produced confident wrong answers with no error
+anywhere, and the reason it survived so long.
+
+`seeds/002_generate_data.py` creates twelve vector columns and fills none of
+them. A pgvector index does not index NULL, so a semantic search returned
+zero rows and no error, and the model reported there are none - about a table
+holding four hundred rows.
+
+Startup now asks each vector column whether it holds a single value
+(`SELECT 1 ... IS NOT NULL LIMIT 1`, which stops at the first row), and a
+column that holds nothing stops its partner being classified SEMANTIC. The
+partner falls through to TEXT, where ILIKE finds what a vector search could
+not, and the log says which columns are affected. A probe that *fails* counts
+as filled - being unable to check is not evidence of emptiness.
+
+`scripts/backfill_embeddings.py` fills them, discovering which columns exist
+by the same rule `TableSchema.embedding_partner` uses.
+
+---
+
+## Found while doing the above, and fixed
+
+None of these were on this list, because nothing had looked.
+
+**`release_lock` raised when the lock had already expired.** `RunAgentTurn`
+releases in a `finally`, so a turn that outlived its own 120-second lease had
+its correct answer replaced by "Cannot release a lock that's no longer
+owned". Logged now, not raised.
+
+**`has_more` was true for every counting question.** `SELECT count(*) AS n
+... LIMIT $1` and its count_query both return 12, so total was 12, the page
+held one row, and the model was invited to walk eleven more pages that do not
+exist. A page shorter than its limit is the end, whatever the count says.
+
+**The agent loop had no iteration budget.** It ran until LangGraph's own
+recursion limit raised `GraphRecursionError`, after paying for every call.
+Twelve iterations, then it stops and says so.
+
+**Malformed tool arguments ended the turn.** Models emit invalid JSON exactly
+when it costs most - long argument lists, truncation at max_tokens - and the
+loop already knows how to let a model correct itself.
+
+**The default model could not be called.** `qwen3-14b` in both `config.py`
+and `docker-compose.yml`, and every `qwen3-*` model answers "403 Unpurchased"
+on this account, so a fresh checkout failed on its first question.
+
+**`log_event` could not log a field called `args`.** `LogRecord` reserves the
+name and raises `KeyError`; it only surfaced once something else in the run
+had configured logging, so it was logging that worked until logging was
+switched on.
 
 ---
 

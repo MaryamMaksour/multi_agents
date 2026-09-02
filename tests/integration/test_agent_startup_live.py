@@ -68,6 +68,21 @@ def dev_dsn() -> dict:
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "1024"))
 
 
+async def connect_as_owner():
+    """A connection as `dev`, or a skip.
+
+    The same contract every other fixture in this suite honours: with no
+    database the run reports "skipped", not "failed". Written out because
+    these two tests connect directly rather than through pool_as, and a test
+    that fails when Postgres is absent turns "you did not start the services"
+    into what looks like a regression.
+    """
+    try:
+        return await asyncpg.connect(**dev_dsn())
+    except Exception as e:
+        pytest.skip(f"development database unavailable as the owner: {e}")
+
+
 async def pool_as(role: str):
     try:
         return await asyncpg.create_pool(
@@ -233,7 +248,7 @@ async def test_an_unfilled_vector_column_is_not_advertised_as_searchable():
 
     returns zero rows and no error, and the model reports there are none.
     """
-    dev = await asyncpg.connect(**dev_dsn())
+    dev = await connect_as_owner()
     try:
         filled = await dev.fetchval(
             "SELECT 1 FROM books WHERE embed_summary IS NOT NULL LIMIT 1")
@@ -268,7 +283,7 @@ async def test_filling_one_row_makes_the_column_searchable_again():
     Written and removed as `dev`; the agent role holds SELECT and could not
     do this, which is the point of the role split.
     """
-    dev = await asyncpg.connect(**dev_dsn())
+    dev = await connect_as_owner()
     try:
         already = await dev.fetchval(
             "SELECT 1 FROM books WHERE embed_summary IS NOT NULL LIMIT 1")

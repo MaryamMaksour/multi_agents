@@ -56,6 +56,20 @@ def dev_dsn() -> dict:
                 password=os.getenv("PGPASSWORD", "dev"))
 
 
+async def owner_pool():
+    """A pool as `dev`, or a skip - see the note in dev_dsn.
+
+    Same contract as every other fixture here: with no database the run
+    reports "skipped", not "failed". These two tests connect directly rather
+    than through the `environment` fixture, so they need their own guard.
+    """
+    try:
+        return await asyncpg.create_pool(**dev_dsn(), min_size=1, max_size=2,
+                                         timeout=3)
+    except Exception as e:
+        pytest.skip(f"development database unavailable as the owner: {e}")
+
+
 class FixedEmbeddings:
     """Every text embeds to nearly the same vector.
 
@@ -344,7 +358,7 @@ async def test_a_recorded_turn_can_be_recalled_as_an_example():
     back by a differently-worded question, and require it to come out.
     """
     embeddings = FixedEmbeddings()
-    pool = await asyncpg.create_pool(**dev_dsn(), min_size=1, max_size=2)
+    pool = await owner_pool()
     session = f"memory-{uuid.uuid4()}"
 
     try:
@@ -384,7 +398,7 @@ async def test_a_turn_whose_tool_failed_is_recalled_as_a_counter_example():
     """The other half. A failure is worth showing the model too - as a
     failure, not as something to copy."""
     embeddings = FixedEmbeddings()
-    pool = await asyncpg.create_pool(**dev_dsn(), min_size=1, max_size=2)
+    pool = await owner_pool()
     session = f"memory-bad-{uuid.uuid4()}"
 
     try:
