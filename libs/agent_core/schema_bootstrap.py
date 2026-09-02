@@ -74,7 +74,7 @@ def render_columns(
     """The column block the model reads, in the shape the adapter parses.
 
     `_extract_column_names` reads this back with a `name type` regex when it
-    validates a column in get_lsit_values, so the first two fields on each
+    validates a column in get_list_values, so the first two fields on each
     line are load-bearing and anything after them is for the model.
 
     The enum values go here as well as in the filter guidance, and the
@@ -152,7 +152,7 @@ async def read_enum_values(
         except DatabaseError:
             # Per column and never raised - but a column that classifies as
             # ENUM and whose values could not be read is a column the model
-            # will be told to call get_lsit_values on, and that call will fail
+            # will be told to call get_list_values on, and that call will fail
             # the same way. Worth a line.
             unread.append(f"{table.name}.{column.name}")
             log_event(logger, "startup.enum_unreadable", level=logging.WARNING,

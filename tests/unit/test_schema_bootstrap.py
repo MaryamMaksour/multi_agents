@@ -12,6 +12,8 @@ costs guidance quality and nothing else - never the agent's ability to start.
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from domain.entities.column_filter import FilterKind
@@ -225,7 +227,7 @@ async def test_table_keys_are_lowercased_to_match_the_adapter():
 async def test_the_result_is_frozen():
     result = await load_agent_schema(FakeSchemaPort())
     assert isinstance(result, AgentSchema)
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         result.tables = ()
 
 
@@ -252,7 +254,7 @@ def test_not_null_is_shown():
 
 def test_the_rendered_block_parses_back_to_the_column_names():
     """The adapter reads this string back with a regex to validate a column
-    in get_lsit_values. If the two disagree, every column looks unknown."""
+    in get_list_values. If the two disagree, every column looks unknown."""
     from adapters.outbound.tools.sql_tool_adapter import _extract_column_names
 
     parsed = _extract_column_names({"columns": render_columns(BOOKS)})

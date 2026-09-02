@@ -99,7 +99,14 @@ def test_tool_names_are_unique(schemas):
 # design produces - so declaring it told the model about a tool that fails on
 # every call. The handler stays until whole-row search is rebuilt or dropped;
 # see docs/deferred.md.
-WITHHELD_FROM_THE_MODEL = {"get_table_records"}
+WITHHELD_FROM_THE_MODEL = {
+    "get_table_records",
+    # The old misspelling of get_list_values. Dispatchable so that a
+    # conversation window recorded before the rename still replays, and so a
+    # model that writes the wrong one is answered rather than refused - but
+    # not declared, because the model should be reading the correct spelling.
+    "get_lsit_values",
+}
 
 
 def test_every_declared_sql_tool_is_dispatchable():
@@ -147,12 +154,28 @@ def test_sql_required_matches_the_parameters_without_defaults():
         )
 
 
-def test_the_misspelled_tool_name_is_preserved():
-    """get_lsit_values is a typo, but call_tool dispatches on that string, so
-    correcting it here alone would break every call. It is renamed in both
-    places or in neither."""
+def test_the_tool_is_declared_with_the_correct_spelling():
+    """It was `get_lsit_values`, and the misspelling reached the model.
+
+    Not cosmetic: the name is something the model reads and then writes back,
+    and it has seen "list" a great many more times than "lsit". It wrote the
+    correct spelling often enough to lose a step to UnknownToolError each
+    time - a paid-for round trip, spent on a typo.
+    """
     adapter = sql_adapter()
-    assert "get_lsit_values" in {s["function"]["name"] for s in adapter.get_tool_schemas()}
+    assert "get_list_values" in {s["function"]["name"] for s in adapter.get_tool_schemas()}
+
+
+def test_the_old_spelling_still_dispatches():
+    """Renamed in the schema, kept in the dispatcher. A conversation window
+    recorded before the rename replays tool calls by name, and a model that
+    writes the old one should be answered rather than refused."""
+    adapter = sql_adapter()
+    # __func__, not the bound methods themselves: attribute access creates a
+    # new bound-method object each time, so `is` compares two wrappers around
+    # the same function and fails.
+    assert (adapter._handlers["get_lsit_values"].__func__
+            is adapter._handlers["get_list_values"].__func__)
 
 
 def test_sql_descriptions_are_substantial():

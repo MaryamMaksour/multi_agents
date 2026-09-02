@@ -175,7 +175,11 @@ async def test_a_prompt_cannot_widen_an_agents_scope(tmp_path):
 
 @pytest.mark.parametrize("value", INJECTION_ATTEMPTS)
 def test_validate_identifier_refuses_everything_hostile(value):
-    with pytest.raises(Exception):
+    # ValueError, not Exception. `raises(Exception)` passes when the function
+    # refuses *and* when it crashes - a TypeError from a bug in the guard
+    # would read as the guard working, which on this particular function is
+    # the difference between a test and a false sense of one.
+    with pytest.raises(ValueError):
         validate_identifier(value)
 
 

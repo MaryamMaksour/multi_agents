@@ -16,8 +16,8 @@ from __future__ import annotations
 
 import pytest
 
-from domain.entities.agent_turn import AgentTurnResult, PaginationState
-from domain.entities.chat_message import ChatMessage, Role, ToolCall
+from domain.entities.agent_turn import AgentTurnResult
+from domain.entities.chat_message import ChatMessage, Role
 
 
 class FakeCache:
@@ -87,15 +87,6 @@ class FakeHistory:
             {"session_id": session_id, "turn_id": turn_id,
              "final_answer": final_answer, "elapsed": elapsed}
         )
-
-    async def log_tool_call(self, session_id: str, turn_id: str, tool_name: str,
-                            input_data, output_data) -> None:
-        self.calls.append("log_tool_call")
-        self.tool_calls.append({"tool_name": tool_name, "input": input_data, "output": output_data})
-
-    async def log_sql_query(self, session_id: str, turn_id: str, query: str, params) -> None:
-        self.calls.append("log_sql_query")
-        self.sql_queries.append({"query": query, "params": params})
 
     async def get_memory(self, query: str) -> list[dict]:
         self.calls.append("get_memory")

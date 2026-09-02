@@ -128,7 +128,12 @@ async def fill(conn, embeddings, table: str, source: str, vector: str,
 
         await conn.executemany(
             f'UPDATE "{table}" SET "{vector}" = $1::vector WHERE id = $2',
-            [(to_vector_literal(v), row["id"]) for v, row in zip(vectors, rows)],
+            # strict=True: the two lists are built from each other and must
+            # be the same length, so a mismatch is a bug here - and without
+            # it zip would truncate silently and leave rows unfilled that the
+            # progress count had already claimed were done.
+            [(to_vector_literal(v), row["id"])
+             for v, row in zip(vectors, rows, strict=True)],
         )
         done += len(rows)
         print(f"  {done}/{target}", end="\r", flush=True)

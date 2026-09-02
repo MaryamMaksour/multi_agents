@@ -64,7 +64,8 @@ class SqlToolAdapter():
 
     def __init__(self, db: DatabasePort, embeddings: EmbeddingPort, cache: CachePort,
                         allowed_tables: list[str], schema: dict, filters: dict, 
-                        lsit_values: dict, dist_op: str, vector_ttl_seconds: int  ):
+                        dist_op: str, vector_ttl_seconds: int,
+                        lsit_values: dict | None = None):
 
         self._db = db
         self._embeddings = embeddings
@@ -72,7 +73,12 @@ class SqlToolAdapter():
         self._allowed_tables = {table.lower() for table in allowed_tables}
         self._schema = schema
         self._filters = filters
-        self._lsit_values = lsit_values
+        # Accepted and ignored. Nothing has ever read it - values are read
+        # from the database by _get_list_values, and the enum values the model
+        # is shown come from the startup probe through `filters`. Kept as an
+        # optional argument so the callers that still pass it are not a
+        # breaking change, and defaulted so new ones need not know about it.
+        self._lsit_values = lsit_values or {}
         self._dist_op = dist_op 
         self._vector_ttl_seconds = vector_ttl_seconds
 
@@ -80,7 +86,13 @@ class SqlToolAdapter():
         self._handlers = {
             "get_table_schema": self._get_table_schema,
             "get_filter": self._get_filter,
-            "get_lsit_values": self._get_lsit_values,
+            "get_list_values": self._get_list_values,
+            # The old misspelling, kept as an alias rather than deleted. Two
+            # reasons: a conversation window from before this rename replays
+            # tool calls by name, and a model that has read the word "list" a
+            # million times writes it correctly often enough that accepting
+            # both is worth one dictionary entry either way.
+            "get_lsit_values": self._get_list_values,
             "db_execute": self._db_execute,
             "get_table_records": self._get_table_records,
             "embed_query_tool": self._embed_query_tool,
@@ -93,10 +105,16 @@ class SqlToolAdapter():
     def get_tool_schemas(self) -> list[dict]:
         """Describe the SQL tools in the format the LLM adapter passes on.
 
-        Names here must match the _handlers keys exactly - call_tool dispatches
+        Names here must match a _handlers key exactly - call_tool dispatches
         on them, so a mismatch is an UnknownToolError at runtime rather than a
-        startup failure. (That includes "get_lsit_values": the spelling is the
-        contract until the handler key is renamed too.)
+        startup failure.
+
+        This declares `get_list_values`, spelled correctly. It was
+        `get_lsit_values`, and the misspelling was not cosmetic: the name is
+        read by the model, which has seen "list" a great many more times than
+        "lsit" and wrote the correct spelling often enough to lose a step to
+        UnknownToolError each time. Both names dispatch, so a replayed
+        conversation window still works.
 
         The descriptions carry the rules that _db_execute enforces by
         returning {"error": ...}. Stating them here turns a wasted round trip
@@ -167,7 +185,7 @@ class SqlToolAdapter():
             {
                 "type": "function",
                 "function": {
-                    "name": "get_lsit_values",
+                    "name": "get_list_values",
                     "description": (
                         "Return the distinct values stored in one column. Use it before "
                         "filtering on a column whose values you have not seen, so you "
@@ -359,7 +377,7 @@ class SqlToolAdapter():
             return filters
 
 
-    async def _get_lsit_values(self, table: str, column: str) -> Any:
+    async def _get_list_values(self, table: str, column: str) -> Any:
         table_id = validate_identifier((table or "").lower())
         if table_id not in self._allowed_tables:
             return {"error": f"Unknown table: {table}. use one of the tables in the schema only {sorted(self._allowed_tables)}"}

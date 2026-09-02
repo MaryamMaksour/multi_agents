@@ -13,7 +13,6 @@ is which query would have been sent, and with what parameters.
 
 from __future__ import annotations
 
-import json
 
 import pytest
 
@@ -336,7 +335,7 @@ async def test_tokens_in_the_count_query_are_resolved_too():
 
 async def test_distinct_values_are_read_from_the_database():
     db = FakeDatabase([[{"genre": "novel"}, {"genre": "poetry"}]])
-    result = await adapter(db=db).call_tool("get_lsit_values", {"table": "books", "column": "genre"})
+    result = await adapter(db=db).call_tool("get_list_values", {"table": "books", "column": "genre"})
 
     assert "novel" in str(result)
     assert "SELECT DISTINCT" in db.queries[0][0]
@@ -345,7 +344,7 @@ async def test_distinct_values_are_read_from_the_database():
 async def test_a_disallowed_table_is_refused_without_querying():
     db = FakeDatabase()
     result = await adapter(db=db).call_tool(
-        "get_lsit_values", {"table": "members", "column": "id"}
+        "get_list_values", {"table": "members", "column": "id"}
     )
     assert "error" in result
     assert db.queries == []
@@ -356,7 +355,7 @@ async def test_a_column_not_in_the_schema_is_refused_without_querying():
     schema before it can reach a query."""
     db = FakeDatabase()
     result = await adapter(db=db).call_tool(
-        "get_lsit_values", {"table": "books", "column": "not_a_column"}
+        "get_list_values", {"table": "books", "column": "not_a_column"}
     )
     assert "error" in result
     assert db.queries == []
@@ -366,7 +365,7 @@ async def test_an_injection_in_a_column_name_never_reaches_the_database():
     db = FakeDatabase()
     with pytest.raises(ToolExecutionError):
         await adapter(db=db).call_tool(
-            "get_lsit_values", {"table": "books", "column": "id; DROP TABLE books"}
+            "get_list_values", {"table": "books", "column": "id; DROP TABLE books"}
         )
     assert db.queries == []
 
@@ -375,7 +374,7 @@ async def test_many_distinct_values_are_summarised_rather_than_listed():
     """Twenty values are useful context; four hundred are noise."""
     db = FakeDatabase([[{"genre": f"g{i}"} for i in range(50)]])
     result = await adapter(db=db).call_tool(
-        "get_lsit_values", {"table": "books", "column": "genre"}
+        "get_list_values", {"table": "books", "column": "genre"}
     )
     assert "50" in str(result)
 

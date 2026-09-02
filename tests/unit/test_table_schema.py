@@ -9,6 +9,8 @@ plain text simply stops being searchable.
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from domain.entities.table_schema import EMBED_COLUMN_PREFIX, ColumnSchema, TableSchema
@@ -139,9 +141,9 @@ def test_a_table_with_no_vectors_keeps_every_column():
 def test_a_schema_cannot_be_edited_in_place():
     """It describes something already true in the database. Code wanting a
     different shape should introspect again, not rewrite the description."""
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         books().name = "other"
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         ColumnSchema("id", "integer").sql_type = "text"
 
 

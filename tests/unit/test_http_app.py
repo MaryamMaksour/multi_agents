@@ -21,7 +21,6 @@ Redis or a model.
 
 from __future__ import annotations
 
-import pytest
 from fastapi.testclient import TestClient
 
 from adapters.inbound.http.app import create_app, final_answer

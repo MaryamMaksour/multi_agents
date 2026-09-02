@@ -156,43 +156,17 @@ class PostgresHistoryAdapter:
         except Exception as e:
             raise HistoryError(f"Error {e} while logging assistant final answer to {self._table}") from e
 
-    async def log_tool_call(self, session_id: str, turn_id: str, tool_name: str, input_data: Any, output_data: Any) -> None:
-        """Log a tool call to the history.
-
-        Raises:
-            HistoryError: if the history call fails.
-        """
-        try:
-            payload_data = {
-                "tool_name": tool_name,
-                "input_data": input_data,
-                "output_data": output_data,
-            }
-            sql = f"""
-                INSERT INTO {self._table}
-                (session_id, turn_id, event_type, payload)
-                VALUES ($1, $2, 'tool', $3::jsonb)
-            """
-            await self._db.execute(sql, session_id, turn_id, json.dumps(payload_data))
-        except Exception as e:
-            raise HistoryError(f"Error {e} while logging tool call to {self._table}") from e
-
-    async def log_sql_query(self, session_id: str, turn_id: str, query: str, params: Any) -> None:
-        """Log an SQL query to the history.
-
-        Raises:
-            HistoryError: if the history call fails.
-        """
-        try:
-            payload_data = {"query": query, "params": params}
-            sql = f"""
-                INSERT INTO {self._table}
-                (session_id, turn_id, event_type, payload)
-                VALUES ($1, $2, 'sql', $3::jsonb)
-            """
-            await self._db.execute(sql, session_id, turn_id, json.dumps(payload_data))
-        except Exception as e:
-            raise HistoryError(f"Error {e} while logging sql query to {self._table}") from e
+    # log_tool_call and log_sql_query were here, and nothing ever called
+    # them. They are not merely unused: they duplicate what is already
+    # recorded. log_assistant_final is handed the turn's whole message list -
+    # every tool call with its arguments and every result, the SQL among them
+    # - and stores it as one row, which is what get_memory reads back and
+    # what scripts/show_history.py renders. A second, per-call record of the
+    # same facts would be a second thing to keep in step, writing rows nothing
+    # reads, on a table the service is deliberately not allowed to UPDATE.
+    #
+    # Removed rather than left in place, because a method on a port
+    # implementation reads as something a caller might use.
 
     async def get_memory(self, query: str) -> list[dict]:
         """Retrieve semantically similar past turns from the history.
