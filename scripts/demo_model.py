@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer

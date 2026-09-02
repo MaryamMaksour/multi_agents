@@ -107,7 +107,6 @@ def assemble_sub_agent(
         allowed_tables=list(ready.allowed_tables),
         schema=ready.schema.schema,
         filters=ready.schema.filters,
-        lsit_values={},
         dist_op=dist_op,
         vector_ttl_seconds=vector_ttl_seconds,
     )

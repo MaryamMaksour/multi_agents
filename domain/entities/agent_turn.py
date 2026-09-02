@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Optional
 
-from .chat_message import ChatMessage, ToolCall
+from .chat_message import ChatMessage
 
 
 # results of a single agent turn, 
@@ -20,9 +20,3 @@ class PaginationState:
 class AgentTurnResult:
     messages: list[ChatMessage] = field(default_factory=list)
     pagination: dict[str, PaginationState] = field(default_factory=dict) # ["agent domain",PaginationState ]
-
-
-@dataclass
-class PipelineStep:
-    content: Any
-    tool_calls: Optional[ToolCall] = None

@@ -152,12 +152,12 @@ def test_an_unmeasured_column_falls_through_to_text():
 def test_an_empty_column_is_text_not_an_enum():
     """Zero passes `<= 20` but means the column has no values at all. Calling
     it an ENUM promises the model a short list to choose from, and
-    get_lsit_values would answer that everything is NULL."""
+    get_list_values would answer that everything is NULL."""
     assert kind_of("genre", 0) is FilterKind.TEXT
 
 
 def test_the_cutoff_does_not_exceed_what_the_tool_will_list():
-    """A cross-file invariant. SqlToolAdapter._get_lsit_values returns a
+    """A cross-file invariant. SqlToolAdapter._get_list_values returns a
     sample plus a count above 20 rather than the full list, and the ENUM
     guidance tells the model to call it. A higher cutoff here would classify
     columns as ENUM whose values the tool then refuses to enumerate."""
@@ -335,7 +335,7 @@ def test_enum_guidance_points_at_the_tool_that_lists_values():
     and deliberately so - see docs/deferred.md. A "corrected" name here
     sends the model to a tool that does not exist."""
     text = guidance_for("genre")
-    assert "get_lsit_values" in text
+    assert "get_list_values" in text
     assert "books" in text and "genre" in text
 
 
@@ -350,7 +350,7 @@ def test_enum_guidance_lists_the_values_when_it_has_them():
         enum_values=["novel", "poetry", "drama"],
     )
     assert "novel" in text and "poetry" in text and "drama" in text
-    assert "get_lsit_values" not in text
+    assert "get_list_values" not in text
 
 
 def test_enum_guidance_says_the_question_may_word_it_differently():
@@ -377,14 +377,14 @@ def test_a_column_with_no_values_read_still_names_the_tool():
     """Reading the values can fail per column. When it does, the guidance
     falls back to telling the model which tool lists them."""
     result = classify_table(books(), COUNTS, enum_values={})
-    assert "get_lsit_values" in result["genre"].guidance
+    assert "get_list_values" in result["genre"].guidance
 
 
 def test_text_guidance_warns_against_listing_the_values():
     """Models call tools speculatively. On `isbn` that returns a 420-value
     sample which is noise in the context and crowds out the schema."""
     text = guidance_for("isbn")
-    assert "Do not call get_lsit_values" in text
+    assert "Do not call get_list_values" in text
 
 
 def test_every_kind_has_guidance():
