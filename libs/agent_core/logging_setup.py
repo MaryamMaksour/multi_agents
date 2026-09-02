@@ -192,14 +192,18 @@ def register_config_secrets() -> None:
 # --- formatters -----------------------------------------------------------
 # Both subclass the same redacting base, so neither can be the one that
 # forgets. format() is final in spirit: subclasses implement _render.
-_RESERVED = frozenset(logging.LogRecord("", 0, "", 0, "", None, None).__dict__) | {
-    "message", "asctime", "taskName",
-}
+
+# The attributes logging puts on every record. Used twice: to pick the caller's
+# own fields back out of a record when formatting, and to rename a field that
+# would collide before it ever reaches one (see _safe_fields).
+_RESERVED_FIELD_NAMES = frozenset(
+    logging.LogRecord("", 0, "", 0, "", None, None).__dict__
+) | {"message", "asctime", "taskName"}
 
 
 def _extra_fields(record: logging.LogRecord) -> dict[str, Any]:
     """Whatever the call site passed as extra=, and nothing else."""
-    return {k: v for k, v in record.__dict__.items() if k not in _RESERVED}
+    return {k: v for k, v in record.__dict__.items() if k not in _RESERVED_FIELD_NAMES}
 
 
 class _RedactingFormatter(logging.Formatter):
@@ -340,6 +344,25 @@ def configure_logging(force: bool = False) -> None:
     _configured = True
 
 
+# LogRecord builds its own attributes first and refuses to let `extra`
+# overwrite any of them - `logger.info(msg, extra={"args": ...})` raises
+# KeyError rather than logging. Several of the reserved names are exactly the
+# words a call site wants: a tool call has `args`, a tool has a `name`, a
+# message has a `module`.
+#
+# This shipped and was caught by the test suite, but only just: log_event
+# returns early when the level is disabled, so the crash appeared only once
+# something else in the run had called configure_logging. Logging that works
+# until logging is switched on is the worst possible arrangement, so the fix
+# is here rather than at the call sites - a field that collides is renamed,
+# and no call site has to know the list.
+def _safe_fields(fields: dict[str, Any]) -> dict[str, Any]:
+    return {
+        (f"{key}_" if key in _RESERVED_FIELD_NAMES else key): value
+        for key, value in fields.items()
+    }
+
+
 def log_event(logger: logging.Logger, event: str, level: int = logging.INFO,
               **fields: Any) -> None:
     """Log a named event with structured fields.
@@ -348,9 +371,21 @@ def log_event(logger: logging.Logger, event: str, level: int = logging.INFO,
     output has a stable key to filter on. Fields go through `extra`, which
     both formatters render - so a call site never has to know which format
     the deployment chose.
+
+    Never raises. A log line that takes down the request it was describing is
+    a worse outcome than a log line that is missing, and the failure would
+    arrive in production - where logging is on - rather than in a test run
+    where it is off.
     """
-    if logger.isEnabledFor(level):
-        logger.log(level, event, extra=fields)
+    if not logger.isEnabledFor(level):
+        return
+    try:
+        logger.log(level, event, extra=_safe_fields(fields))
+    except Exception:  # noqa: BLE001 - observability must not break the caller
+        try:
+            logger.log(level, event)
+        except Exception:
+            pass
 
 
 class Timer:

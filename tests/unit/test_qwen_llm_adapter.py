@@ -249,13 +249,75 @@ async def test_a_provider_failure_becomes_a_domain_error():
 
 
 @pytest.mark.asyncio
-async def test_a_malformed_tool_argument_string_is_also_a_domain_error():
-    """Models do emit invalid JSON. It must not surface as a bare
-    JSONDecodeError from inside the adapter."""
+async def test_a_malformed_tool_argument_string_becomes_an_empty_call():
+    """Models do emit invalid JSON, and the turn should survive it.
+
+    This used to raise LLMRequestError, which ended the turn and lost
+    everything already gathered - for a mistake the model is perfectly capable
+    of correcting. The conditions that produce it are the ones where that
+    matters most: a long argument list, or truncation at max_tokens.
+
+    Empty arguments instead. The loop calls the tool, the tool rejects the
+    call, the model reads the error and tries again - which is the behaviour
+    every other tool failure already has. The malformed string is logged with
+    the tool's name so a model that does this constantly is visible.
+    """
     bad = SimpleNamespace(
         content="",
         tool_calls=[SimpleNamespace(id="c1", function=SimpleNamespace(
             name="db_execute", arguments="{not json"))],
     )
-    with pytest.raises(LLMRequestError):
-        await adapter(FakeClient(bad)).achat([ChatMessage(role=Role.USER, content="q")])
+    reply = await adapter(FakeClient(bad)).achat([ChatMessage(role=Role.USER, content="q")])
+
+    assert reply.tool_calls[0].name == "db_execute"
+    assert reply.tool_calls[0].args == {}
+
+
+@pytest.mark.asyncio
+async def test_tool_arguments_that_are_valid_json_but_not_an_object():
+    """`"null"` and `"[1,2]"` parse, then break every tool that does args.get."""
+    bad = SimpleNamespace(
+        content="",
+        tool_calls=[SimpleNamespace(id="c1", function=SimpleNamespace(
+            name="db_execute", arguments="[1, 2]"))],
+    )
+    reply = await adapter(FakeClient(bad)).achat([ChatMessage(role=Role.USER, content="q")])
+    assert reply.tool_calls[0].args == {}
+
+
+@pytest.mark.asyncio
+async def test_reasoning_content_is_captured_when_the_model_returns_it():
+    """Qwen's reasoning models answer in `content` and think in
+    `reasoning_content`. The second was being dropped, and it is the field
+    that says why a wrong answer was wrong."""
+    thinking = SimpleNamespace(
+        content="There are 12.", tool_calls=None,
+        reasoning_content="The question says novels, so genre must be filtered.",
+    )
+    reply = await adapter(FakeClient(thinking)).achat(
+        [ChatMessage(role=Role.USER, content="q")])
+    assert reply.reasoning == "The question says novels, so genre must be filtered."
+
+
+@pytest.mark.asyncio
+async def test_a_model_without_reasoning_leaves_the_field_unset():
+    """Most models have no such field, and absent must not mean empty string -
+    the trace renderer shows the section only when there is something in it."""
+    plain = SimpleNamespace(content="There are 12.", tool_calls=None)
+    reply = await adapter(FakeClient(plain)).achat(
+        [ChatMessage(role=Role.USER, content="q")])
+    assert reply.reasoning is None
+
+
+@pytest.mark.asyncio
+async def test_reasoning_is_never_sent_back_to_the_provider():
+    """Recorded, not resent: it is tokens paid for advice the model already
+    took, and some providers reject the field outright."""
+    from adapters.outbound.llm.qwen_llm_adapter import QwenLLMAdapter
+
+    wire = QwenLLMAdapter._to_provider_message(ChatMessage(
+        role=Role.ASSISTANT, content="There are 12.",
+        reasoning="a long chain of thought",
+    ))
+    assert "reasoning" not in wire
+    assert "reasoning_content" not in wire

@@ -26,6 +26,18 @@ class ChatMessage:
     tool_calls: Optional[list[ToolCall]] = None
     tool_call_id: Optional[str] = None
     name: Optional[str] = None
+    # What the model thought before it answered, when the provider returns it.
+    #
+    # Qwen's reasoning models put their chain of thought in a separate
+    # `reasoning_content` field rather than in `content`, and it was being
+    # dropped on the floor - which is a shame, because "why did it answer 129"
+    # is precisely the question the trace exists to answer, and the reasoning
+    # names the wrong turn directly where the tool arguments only imply it.
+    #
+    # Recorded, never resent. _to_provider_message does not read this field:
+    # sending a previous turn's reasoning back is tokens paid for advice the
+    # model already took, and some providers reject the field outright.
+    reasoning: Optional[str] = None
 
 
 # The wire shape of a message, defined once.
@@ -54,6 +66,7 @@ def to_plain(message: "ChatMessage") -> dict:
         ] if message.tool_calls else None,
         "tool_call_id": message.tool_call_id,
         "name": message.name,
+        "reasoning": message.reasoning,
     }
 
 
@@ -68,4 +81,8 @@ def from_plain(data: dict) -> "ChatMessage":
         ] if data.get("tool_calls") else None,
         tool_call_id=data.get("tool_call_id"),
         name=data.get("name"),
+        # .get, like every field here: rows written before this field existed
+        # are read back by this same function, and a KeyError on an old row
+        # would take out get_memory for the whole retention window.
+        reasoning=data.get("reasoning"),
     )

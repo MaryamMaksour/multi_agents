@@ -303,3 +303,62 @@ def test_timer_measures_a_block():
 def test_timer_is_zero_before_the_block_ends():
     timer = Timer()
     assert timer.ms == 0.0
+
+
+# --- the failure mode that logging itself can cause ----------------------
+
+def test_a_reserved_field_name_does_not_raise():
+    """`extra={"args": ...}` raises KeyError inside logging, and the words it
+    reserves are the words a call site wants: a tool call has args, a tool has
+    a name, a module has a module.
+
+    This shipped. It was survivable only because log_event returns early when
+    the level is disabled, so the crash appeared once something else in the
+    run had called configure_logging - logging that works until logging is
+    switched on. The rename happens here so no call site has to know the list.
+    """
+    logger = logging.getLogger("test.reserved")
+    logger.setLevel(logging.INFO)
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(TextFormatter())
+    logger.handlers = [handler]
+    logger.propagate = False
+
+    log_event(logger, "tool.call", args={"query": "SELECT 1"}, name="db_execute",
+              module="sql", message="x", levelname="nope")
+
+    out = stream.getvalue()
+    assert "tool.call" in out
+    assert "SELECT 1" in out
+
+
+def test_log_event_never_raises_even_on_an_unencodable_value():
+    """Observability must not be able to break the request it describes."""
+    class Hostile:
+        def __repr__(self):
+            raise RuntimeError("no repr for you")
+
+    logger = logging.getLogger("test.hostile")
+    logger.setLevel(logging.INFO)
+    handler = logging.StreamHandler(io.StringIO())
+    handler.setFormatter(JsonFormatter())
+    logger.handlers = [handler]
+    logger.propagate = False
+
+    log_event(logger, "tool.result", value=Hostile())  # must not raise
+
+
+def test_disabled_level_skips_the_work_entirely():
+    """The early return is why the reserved-name bug hid for as long as it
+    did, so it is worth pinning: a disabled level must not format anything."""
+    logger = logging.getLogger("test.disabled")
+    logger.setLevel(logging.ERROR)
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(TextFormatter())
+    logger.handlers = [handler]
+    logger.propagate = False
+
+    log_event(logger, "tool.call", level=logging.DEBUG, args={"a": 1})
+    assert stream.getvalue() == ""

@@ -14,6 +14,7 @@ start rather than one that answers wrongly.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from contextlib import asynccontextmanager
 
@@ -30,13 +31,22 @@ from adapters.inbound.http.schemas import (
 from domain.entities.chat_message import Role
 from domain.exceptions import (
     DomainError,
-    GrantMismatchError,
-    RegistryError,
     SessionBusyError,
     UnknownAgentError,
 )
 from libs.agent_core import config
 from libs.agent_core.composition import open_runtime
+from libs.agent_core.logging_setup import (
+    Timer,
+    bind,
+    configure_logging,
+    context,
+    log_event,
+    new_request_id,
+    unbind,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def final_answer(result) -> str:
@@ -89,20 +99,97 @@ def create_app(open_runtime_fn=open_runtime) -> FastAPI:
     would not get written.
     """
 
+    # Before anything else in the process, and before open_runtime can raise:
+    # a startup that fails while logging is still unconfigured fails silently,
+    # which is the failure this whole file exists to make visible.
+    configure_logging()
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        runtime = await open_runtime_fn()
+        log_event(logger, "startup.begin", agent_key=config.AGENT_KEY or "(orchestrator)")
+        with Timer() as timer:
+            try:
+                runtime = await open_runtime_fn()
+            except Exception:
+                # exc_info, not str(e): a startup failure is usually a
+                # connection error several frames down, and the frame that
+                # raised is the diagnosis. The formatter redacts the DSN.
+                logger.critical("startup.failed", exc_info=True)
+                raise
+
+        # Bound for the life of the process, not per request: every line this
+        # container writes says which agent wrote it, which is what makes one
+        # `docker compose logs` readable across five of them.
+        bind(agent=runtime.agent.spec.name if runtime.agent else "orchestrator")
+
+        log_event(
+            logger, "startup.ready", ms=timer.ms, kind=runtime.kind,
+            tables=list(runtime.allowed_tables_or_empty()),
+            routes_to=list(runtime.routes_to),
+            model=config.QWEN_MODEL, embed_model=config.QWEN_EMBED_MODEL,
+        )
         app.state.runtime = runtime
         try:
             yield
         finally:
-            await runtime.aclose()
+            log_event(logger, "shutdown.begin")
+            try:
+                await runtime.aclose()
+            except Exception:
+                logger.error("shutdown.errors", exc_info=True)
+                raise
+            log_event(logger, "shutdown.done")
 
     app = FastAPI(
         title="Multi-agent runtime",
         summary="One process per agent, plus an orchestrator that routes between them.",
         lifespan=lifespan,
     )
+
+    @app.middleware("http")
+    async def _log_request(request: Request, call_next):
+        """One line in, one line out, with an id that ties them together.
+
+        The id also crosses process boundaries: the orchestrator sends its
+        request id to a sub-agent as X-Request-ID, so a question and the two
+        delegated calls it produced share one id across three containers. A
+        caller that supplies one keeps it, which is what makes the id usable
+        from outside as well.
+
+        /health is logged at DEBUG. A container health check runs it every few
+        seconds, and at INFO it buries every line that matters.
+        """
+        incoming = request.headers.get("x-request-id", "")
+        request_id = incoming[:64] if incoming else new_request_id()
+        tokens = bind(request_id=request_id)
+
+        level = logging.DEBUG if request.url.path == "/health" else logging.INFO
+        log_event(logger, "http.request", level=level,
+                  method=request.method, path=request.url.path)
+
+        with Timer() as timer:
+            try:
+                response = await call_next(request)
+            except Exception:
+                # FastAPI's handlers convert DomainError into a response, so
+                # anything arriving here is unexpected - and the only place it
+                # is recorded, because the client gets a bare 500.
+                log_event(logger, "http.unhandled", level=logging.ERROR,
+                          method=request.method, path=request.url.path, ms=timer.ms)
+                logger.error("unhandled exception serving the request", exc_info=True)
+                unbind(tokens)
+                raise
+
+        log_event(logger, "http.response",
+                  level=logging.ERROR if response.status_code >= 500 else level,
+                  method=request.method, path=request.url.path,
+                  status=response.status_code, ms=timer.ms)
+
+        # Echoed so a caller can quote it when reporting a problem, and so the
+        # orchestrator can record which id a sub-agent used.
+        response.headers["x-request-id"] = request_id
+        unbind(tokens)
+        return response
 
     @app.exception_handler(DomainError)
     async def _domain_error(request: Request, exc: DomainError):
@@ -119,6 +206,10 @@ def create_app(open_runtime_fn=open_runtime) -> FastAPI:
         our own wording. An unexpected one still returns a bare 500 rather
         than whatever a library happened to put in its message.
         """
+        # The body carries the type and message; the traceback stays here.
+        # Logged at ERROR because a DomainError reaching the edge means a turn
+        # was lost, whatever the caller does with the 500.
+        logger.error("domain error answering the request", exc_info=exc)
         raise HTTPException(
             status_code=500, detail=f"{type(exc).__name__}: {exc}"
         )
@@ -127,10 +218,14 @@ def create_app(open_runtime_fn=open_runtime) -> FastAPI:
     async def _busy(request: Request, exc: SessionBusyError):
         # 409, not 500: the caller did nothing wrong and retrying is the
         # correct response, which is a different instruction from "this broke".
+        # WARNING, not ERROR, for the same reason - but logged, because a
+        # session that is busy every time is a lock that is not being released.
+        log_event(logger, "session.busy", level=logging.WARNING, detail=str(exc))
         raise HTTPException(status_code=409, detail=str(exc))
 
     @app.exception_handler(UnknownAgentError)
     async def _unknown(request: Request, exc: UnknownAgentError):
+        log_event(logger, "agent.unknown", level=logging.WARNING, detail=str(exc))
         raise HTTPException(status_code=404, detail=str(exc))
 
     @app.get("/health", response_model=HealthResponse)
@@ -164,11 +259,23 @@ def create_app(open_runtime_fn=open_runtime) -> FastAPI:
         session_id = body.session_id or f"delegate:{uuid.uuid4()}"
         turn_id = body.context.turn_id or str(uuid.uuid4())
 
-        result = await runtime.turn.run(
-            session_id=session_id, turn_id=turn_id, user_input=body.user_input,
-        )
+        # The ids label every line the turn produces, at any depth - the SQL
+        # the tool ran, the model call, the history write - so a wrong answer
+        # can be read back from the logs as one sequence rather than searched
+        # for among interleaved turns.
+        with context(session_id=session_id, turn_id=turn_id):
+            log_event(logger, "run.received", question=body.user_input)
+            with Timer() as timer:
+                result = await runtime.turn.run(
+                    session_id=session_id, turn_id=turn_id,
+                    user_input=body.user_input,
+                )
+            answer = final_answer(result)
+            log_event(logger, "run.answered", ms=timer.ms, answer=answer,
+                      messages=len(result.messages))
+
         return TurnResponse(
-            answer=final_answer(result), session_id=session_id, turn_id=turn_id,
+            answer=answer, session_id=session_id, turn_id=turn_id,
             pagination=pagination_payload(result),
         )
 
@@ -185,13 +292,29 @@ def create_app(open_runtime_fn=open_runtime) -> FastAPI:
             )
 
         turn_id = str(uuid.uuid4())
-        result = await runtime.turn.run(
-            session_id=body.session_id, turn_id=turn_id, user_input=body.question,
-        )
+
+        with context(session_id=body.session_id, turn_id=turn_id):
+            log_event(logger, "ask.received", question=body.question)
+            with Timer() as timer:
+                result = await runtime.turn.run(
+                    session_id=body.session_id, turn_id=turn_id,
+                    user_input=body.question,
+                )
+            answer = final_answer(result)
+            delegated = delegated_questions(result)
+
+            # The delegated questions are the orchestrator's actual output.
+            # An answer of 129 to a question about novels is either a bad
+            # delegation or a bad sub-agent, and this line is what separates
+            # them without opening the database.
+            log_event(logger, "ask.answered", ms=timer.ms, answer=answer,
+                      delegated=[{"agent": d.agent, "question": d.question}
+                                 for d in delegated])
+
         return TurnResponse(
-            answer=final_answer(result), session_id=body.session_id, turn_id=turn_id,
+            answer=answer, session_id=body.session_id, turn_id=turn_id,
             pagination=pagination_payload(result),
-            delegated=delegated_questions(result),
+            delegated=delegated,
         )
 
     @app.get("/agents", response_model=list[AgentSummary])
