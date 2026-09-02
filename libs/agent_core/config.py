@@ -31,6 +31,10 @@ QWEN_API_URL = os.getenv("QWEN_API_URL", "https://dashscope-intl.aliyuncs.com/co
 QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen3-14b")
 QWEN_TEMPERATURE = float(os.getenv("QWEN_TEMPERATURE", "0.1"))
 QWEN_MAX_TOKENS = int(os.getenv("QWEN_MAX_TOKENS", "32000"))
+# Qwen3 hybrid-thinking models (qwen3-*) reject non-streaming calls unless
+# enable_thinking is explicitly false. Non-Qwen endpoints may reject unknown
+# parameters, so the flag is only sent when set. "" means: send nothing.
+QWEN_ENABLE_THINKING = os.getenv("QWEN_ENABLE_THINKING", "false")
 
 QWEN_EMBED_MODEL = os.getenv("QWEN_EMBED_MODEL", "text-embedding-v3")
 

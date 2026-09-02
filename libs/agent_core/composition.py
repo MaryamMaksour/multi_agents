@@ -376,11 +376,15 @@ async def open_runtime(agent_key: str | None = None) -> Runtime:
 
     embeddings = QwenEmbeddingAdapter(embed_client, config.QWEN_EMBED_MODEL)
 
+    extra_body = None
+    if config.QWEN_ENABLE_THINKING:
+        extra_body = {"enable_thinking": config.QWEN_ENABLE_THINKING.lower() == "true"}
+
     def llm_factory(tool_schemas):
         return QwenLLMAdapter(
             client=llm_client, model=config.QWEN_MODEL,
             temperature=config.QWEN_TEMPERATURE, max_tokens=config.QWEN_MAX_TOKENS,
-            tools=tool_schemas,
+            tools=tool_schemas, extra_body=extra_body,
         )
 
     # History is written by the service, not by an agent, so it goes through

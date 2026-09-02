@@ -9,12 +9,13 @@ from domain.exceptions import LLMRequestError
 
 class QwenLLMAdapter:
     def __init__(self, client: AsyncOpenAI, model: str, temperature: float, max_tokens: int,
-                 tools: list[dict] | None = None):
+                 tools: list[dict] | None = None, extra_body: dict[str, Any] | None = None):
         self._client = client
         self._model = model
         self._temperature = temperature
         self._max_tokens = max_tokens
-        self._tools = tools  # bound 
+        self._tools = tools  # bound
+        self._extra_body = extra_body
 
     @staticmethod
     def _to_provider_message(msg: ChatMessage) -> dict:
@@ -77,6 +78,7 @@ class QwenLLMAdapter:
                 tools=self._tools,
                 temperature=self._temperature,
                 max_tokens=self._max_tokens,
+                extra_body=self._extra_body,
             )
             return self._from_provider_response(response.choices[0].message)
         except Exception as e:
