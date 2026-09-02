@@ -210,6 +210,26 @@ async def test_achat_sends_the_bound_tool_schemas():
 
 
 @pytest.mark.asyncio
+async def test_achat_forwards_extra_body_to_the_provider():
+    """Qwen3 hybrid-thinking models refuse non-streaming calls unless
+    enable_thinking is sent explicitly; it rides in extra_body."""
+    client = FakeClient()
+    await adapter(client, extra_body={"enable_thinking": False}).achat(
+        [ChatMessage(role=Role.USER, content="hi")]
+    )
+
+    assert client.completions.kwargs["extra_body"] == {"enable_thinking": False}
+
+
+@pytest.mark.asyncio
+async def test_achat_sends_no_extra_body_by_default():
+    client = FakeClient()
+    await adapter(client).achat([ChatMessage(role=Role.USER, content="hi")])
+
+    assert client.completions.kwargs["extra_body"] is None
+
+
+@pytest.mark.asyncio
 async def test_achat_sends_the_whole_conversation_in_order():
     client = FakeClient()
     await adapter(client).achat([

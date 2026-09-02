@@ -28,9 +28,31 @@ import os
 # not a code change - the adapter is the same either way.
 QWEN_API_KEY = os.getenv("QWEN_API_KEY", "")
 QWEN_API_URL = os.getenv("QWEN_API_URL", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
-QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen3-14b")
+# qwen-plus delegates reliably as the orchestrator; qwen3-14b (thinking off)
+# tends to narrate its plan instead of emitting tool calls.
+QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen-plus")
 QWEN_TEMPERATURE = float(os.getenv("QWEN_TEMPERATURE", "0.1"))
-QWEN_MAX_TOKENS = int(os.getenv("QWEN_MAX_TOKENS", "32000"))
+# Completion length, not context. DashScope caps qwen3-* at 8192.
+QWEN_MAX_TOKENS = int(os.getenv("QWEN_MAX_TOKENS", "8192"))
+# Qwen3 hybrid-thinking models (qwen3-*) reject non-streaming calls unless
+# enable_thinking is explicitly false, while strict OpenAI-compatible
+# endpoints reject the parameter altogether. Unset means: infer from the
+# model name - qwen3-* gets false, anything else gets nothing. "true" /
+# "false" force it; "none" forces it off for a qwen3-* model.
+QWEN_ENABLE_THINKING = os.getenv("QWEN_ENABLE_THINKING", "")
+_ENABLE_THINKING_VALUES = ("", "true", "false", "none")
+
+
+def llm_extra_body(model: str | None = None, enable_thinking: str | None = None) -> dict | None:
+    """Provider-specific request fields for the chat call, or None."""
+    model = QWEN_MODEL if model is None else model
+    setting = (QWEN_ENABLE_THINKING if enable_thinking is None else enable_thinking).strip().lower()
+    if setting in ("true", "false"):
+        return {"enable_thinking": setting == "true"}
+    if setting == "" and model.lower().startswith("qwen3"):
+        return {"enable_thinking": False}
+    return None
+
 
 QWEN_EMBED_MODEL = os.getenv("QWEN_EMBED_MODEL", "text-embedding-v3")
 
@@ -148,6 +170,12 @@ def validate() -> None:
             "EMBED_API_URL is set but EMBED_API_KEY is empty. A local server "
             "usually ignores the key, but it still has to be present - pass any "
             "non-empty value."
+        )
+
+    if QWEN_ENABLE_THINKING.strip().lower() not in _ENABLE_THINKING_VALUES:
+        raise RuntimeError(
+            f"QWEN_ENABLE_THINKING={QWEN_ENABLE_THINKING!r} is not one of "
+            "'' (infer from QWEN_MODEL), 'true', 'false', 'none'."
         )
 
     # A URL where a model name was meant, or the reverse. Easy to do when
