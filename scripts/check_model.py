@@ -69,6 +69,43 @@ PROBE = {
 }
 
 
+def key_shape_warning() -> str:
+    """A hint when the key does not look like it belongs to this endpoint.
+
+    Written as a hint and not a refusal, because the shape of a valid key is
+    the provider's business and it can change. But the failure it catches is
+    expensive and silent: a key from another provider is rejected with
+    "Incorrect API key provided", identically on every model and in every
+    region, so it reads as an access problem and sends you to the wrong
+    console. One run cost exactly that here - both regions tried, four models
+    listed, and the key was never a DashScope key at all.
+
+    Checked before any request, because there is nothing to learn from asking.
+    """
+    if not API_KEY or "dashscope" not in BASE_URL:
+        return ""
+
+    reasons = []
+    if "." in API_KEY:
+        reasons.append("contains '.'")
+    if len(API_KEY) > 80:
+        reasons.append(f"is {len(API_KEY)} characters")
+    if not API_KEY.startswith("sk-"):
+        reasons.append("does not start with 'sk-'")
+
+    if not reasons:
+        return ""
+    return (
+        "This key " + " and ".join(reasons) + ", which does not look like a\n"
+        "DashScope key. A key from another provider is refused with "
+        "'Incorrect API\nkey provided' on every model and in both regions - "
+        "the same message a\nreal access problem gives, which is what makes "
+        "it worth saying here.\n\n"
+        "DashScope keys come from Model Studio (bailian.console.aliyun.com),\n"
+        "and are issued per region.\n"
+    )
+
+
 def ask(model: str) -> tuple[str, str]:
     """Returns (verdict, detail)."""
     body = json.dumps({**PROBE, "model": model}).encode()
@@ -184,6 +221,10 @@ def main() -> None:
     # DashScope key starts sk- and is about fifty characters.
     print(f"key: {len(API_KEY)} chars, starts {API_KEY[:6]!r}, "
           f"ends {API_KEY[-4:]!r}\n")
+
+    warning = key_shape_warning()
+    if warning:
+        print(warning)
     width = max(len(m) for m in (args.models or CANDIDATES)) + 2
     print(f"{'model':<{width}}{'verdict':<13}detail")
     print("-" * 78)
