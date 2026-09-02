@@ -259,6 +259,29 @@ it has.
 
 ---
 
+## Two structurally identical questions, answered differently
+
+Asked "how many Arabic novels under 300 pages" and "how many English novels
+under 400 pages" in one session, the model applied the `genre` filter to the
+first and not to the third. 10 is right for the first; 127 is
+`language = 'English'` with no genre at all, where the answer is 12.
+
+Both remaining failures correlate with position in the session - the language
+rule also held on question one and broke on question two - which points at
+the conversation window rather than at the prompt wording. That is a
+hypothesis and not yet a finding.
+
+**What was missing to tell:** which component was wrong. The orchestrator
+rewrites the user's question into a self-contained one before delegating, and
+that rewrite can drop a constraint - send "how many English books" and the
+agent answers it correctly. From outside, an orchestrator that dropped the
+word and an agent that ignored the column look identical.
+
+`/ask` now returns the delegated questions, so the next run says which. Until
+then, changing either component is guessing.
+
+---
+
 ## The first real answers, and the two things they got wrong
 
 Three questions, all answered from real data, every number checked against

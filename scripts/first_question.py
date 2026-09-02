@@ -111,6 +111,8 @@ def ask(question: str, session: str) -> None:
         return
     elapsed = time.time() - started
 
+    for step in body.get("delegated", []):
+        print(f"→  asked {step['agent']}: {step['question']}")
     print(f"A  {body['answer']}")
     print(f"   {elapsed:.1f}s   turn {body['turn_id'][:8]}")
 

@@ -26,7 +26,7 @@ from fastapi.testclient import TestClient
 
 from adapters.inbound.http.app import create_app, final_answer
 from domain.entities.agent_turn import AgentTurnResult, PaginationState
-from domain.entities.chat_message import ChatMessage, Role
+from domain.entities.chat_message import ChatMessage, Role, ToolCall
 from domain.entities.provider_spec import AgentStatus, ProviderSpec
 from domain.exceptions import SessionBusyError
 from libs.agent_core.agent_startup import ReadyAgent
@@ -37,10 +37,12 @@ from libs.agent_core.schema_bootstrap import AgentSchema
 class FakeTurn:
     """RunAgentTurn's shape, recording what it was asked."""
 
-    def __init__(self, answer="Twelve books match.", raises=None, pagination=None):
+    def __init__(self, answer="Twelve books match.", raises=None, pagination=None,
+                 delegated=()):
         self.answer = answer
         self.raises = raises
         self.pagination = pagination or {}
+        self.delegated = list(delegated)
         self.calls = []
 
     async def run(self, session_id, turn_id, user_input):
@@ -48,13 +50,18 @@ class FakeTurn:
                            "user_input": user_input})
         if self.raises:
             raise self.raises
-        return AgentTurnResult(
-            messages=[
-                ChatMessage(role=Role.USER, content=user_input),
-                ChatMessage(role=Role.ASSISTANT, content=self.answer),
-            ],
-            pagination=self.pagination,
-        )
+
+        messages = [ChatMessage(role=Role.USER, content=user_input)]
+        for i, (agent, question) in enumerate(self.delegated):
+            messages.append(ChatMessage(
+                role=Role.ASSISTANT, content=None,
+                tool_calls=[ToolCall(id=f"c{i}", name=agent,
+                                     args={"query": question})],
+            ))
+            messages.append(ChatMessage(role=Role.TOOL, content="{}", tool_call_id=f"c{i}"))
+        messages.append(ChatMessage(role=Role.ASSISTANT, content=self.answer))
+
+        return AgentTurnResult(messages=messages, pagination=self.pagination)
 
 
 def sub_agent_runtime(turn=None, tables=("books", "authors")):
@@ -279,3 +286,54 @@ def test_agents_lists_what_the_registry_holds(monkeypatch):
     assert [a["key"] for a in body] == ["catalog", "circulation"]
     assert body[0]["display_name"] == "Catalogue"
     assert body[0]["status"] == "active"
+
+
+# --------------------------------------------------------------------------
+# what the orchestrator actually asked
+#
+# Returned so a wrong answer can be attributed. The orchestrator rewrites the
+# user's question into a self-contained one, and that rewrite can drop a
+# constraint - asked for novels it may send "how many English books", and the
+# agent answers that correctly. From outside, the two failures look the same
+# and the wrong component gets changed.
+# --------------------------------------------------------------------------
+
+
+def test_ask_reports_the_question_that_was_delegated():
+    turn = FakeTurn(delegated=[("catalog", "How many English novels are under 400 pages?")])
+    with client_for(orchestrator_runtime(turn)) as client:
+        body = client.post("/ask", json={
+            "question": "كم رواية إنكليزية أقل من ٤٠٠ صفحة؟", "session_id": "s",
+        }).json()
+
+    assert body["delegated"] == [{
+        "agent": "catalog",
+        "question": "How many English novels are under 400 pages?",
+    }]
+
+
+def test_several_delegations_are_reported_in_order():
+    turn = FakeTurn(delegated=[("catalog", "How many books?"),
+                               ("circulation", "How many are on loan?")])
+    with client_for(orchestrator_runtime(turn)) as client:
+        body = client.post("/ask", json={"question": "q", "session_id": "s"}).json()
+
+    assert [d["agent"] for d in body["delegated"]] == ["catalog", "circulation"]
+
+
+def test_a_turn_with_no_delegation_reports_none():
+    with client_for(orchestrator_runtime()) as client:
+        body = client.post("/ask", json={"question": "q", "session_id": "s"}).json()
+
+    assert body["delegated"] == []
+
+
+def test_a_sub_agent_reports_no_delegation():
+    """It delegates to nobody, and its own SQL tool calls are not questions
+    asked of an agent - reporting them here would read as a fan-out that
+    never happened."""
+    turn = FakeTurn(delegated=[("db_execute", "SELECT 1")])
+    with client_for(sub_agent_runtime(turn)) as client:
+        body = client.post("/run", json={"user_input": "q"}).json()
+
+    assert "delegated" not in body or body["delegated"] == []

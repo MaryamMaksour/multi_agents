@@ -22,6 +22,7 @@ from fastapi import FastAPI, HTTPException, Request
 from adapters.inbound.http.schemas import (
     AgentSummary,
     AskRequest,
+    DelegatedQuestion,
     HealthResponse,
     RunRequest,
     TurnResponse,
@@ -50,6 +51,22 @@ def final_answer(result) -> str:
         if message.role is Role.ASSISTANT and (message.content or "").strip():
             return message.content
     return ""
+
+
+def delegated_questions(result) -> list[DelegatedQuestion]:
+    """What the orchestrator actually asked each agent.
+
+    Read from the turn's own messages rather than recorded separately: the
+    tool calls are already there, and a second record of the same fact is a
+    second thing that can be wrong.
+    """
+    asked = []
+    for message in result.messages:
+        for call in getattr(message, "tool_calls", None) or []:
+            question = (call.args or {}).get("query")
+            if isinstance(question, str) and question.strip():
+                asked.append(DelegatedQuestion(agent=call.name, question=question))
+    return asked
 
 
 def pagination_payload(result) -> dict:
@@ -174,6 +191,7 @@ def create_app(open_runtime_fn=open_runtime) -> FastAPI:
         return TurnResponse(
             answer=final_answer(result), session_id=body.session_id, turn_id=turn_id,
             pagination=pagination_payload(result),
+            delegated=delegated_questions(result),
         )
 
     @app.get("/agents", response_model=list[AgentSummary])

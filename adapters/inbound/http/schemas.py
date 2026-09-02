@@ -48,6 +48,21 @@ class AskRequest(BaseModel):
     session_id: str = Field(min_length=1)
 
 
+class DelegatedQuestion(BaseModel):
+    """One question the orchestrator sent to one agent.
+
+    Returned so that a wrong answer can be attributed. The orchestrator
+    rewrites the user's question into a self-contained one before delegating,
+    and that rewrite can drop a constraint - asked for novels it may send
+    "how many English books", and the agent then answers that question
+    correctly. Without this, the two failures look identical from outside and
+    the wrong component gets changed.
+    """
+
+    agent: str
+    question: str
+
+
 class TurnResponse(BaseModel):
     """One turn's answer, plus what the caller needs to continue it.
 
@@ -60,6 +75,9 @@ class TurnResponse(BaseModel):
     session_id: str
     turn_id: str
     pagination: dict[str, Any] = Field(default_factory=dict)
+
+    # Empty for a sub-agent, which delegates to nobody.
+    delegated: list[DelegatedQuestion] = Field(default_factory=list)
 
 
 class AgentSummary(BaseModel):
