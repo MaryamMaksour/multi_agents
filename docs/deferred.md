@@ -111,27 +111,20 @@ its own, not a field on a form.
 
 ---
 
-## `get_memory` filters on a column nothing writes
+## `get_memory` and `valid`
 
-**The bug, and it is not small.** `PostgresHistoryAdapter.get_memory` selects
-past turns `WHERE u.valid = true` for its good examples and `WHERE u.valid =
-false` for its bad ones. Nothing anywhere writes `valid`. It stays NULL,
-`NULL = true` is NULL, and both halves match no rows.
+**Resolved with the automatic rule.** `log_assistant_final` now writes `valid`
+on the `assistant_final` row: true when no tool result in the trace is an
+`{"error": ...}` dict, false otherwise. `get_memory` reads `f.valid` from that
+row and deduplicates on `COALESCE(reason, turn_id)` so untagged turns are not
+collapsed into a single example. The human-review option stays open - `reason`
+is still only ever written by hand.
 
-So the memory feature currently costs an embedding call on every single turn
-and returns an empty list, and `RunAgentTurn` appends that empty list to the
-system prompt as `"History: []"`.
-
-**Why it is deferred rather than fixed.** The column is described in the code
-as "manually-assigned", which means the original design had a person marking
-turns good or bad - and that is a product decision, not a bug fix. The options
-are a human review step, an automatic rule (a turn whose trace contains an
-error is invalid), or dropping the distinction. Picking one without knowing
-which is worse than leaving it visible.
-
-**Cheap thing to do first, whichever wins:** stop paying for the embedding
-when the query cannot match anything. It is still one embedding call per turn
-for a query that returns nothing.
+**Still open: scope.** `get_memory` is per agent (one history table each) but
+not per session. Any session's question and trace can be shown to any other
+session's model as a worked example. With a single operator that is the point;
+with real users it is a data leak and needs a `session_id` (or tenant) filter
+before Login lands.
 
 **Less urgent than it was.** The examples get_memory would have supplied are
 now written into the sub-agent prompt as a fixed method - see

@@ -287,8 +287,11 @@ class SqlToolAdapter():
         ]
 
 
-    async def call_tool(self, tool_name: str, args: dict) -> Any:
+    async def call_tool(self, tool_name: str, args: dict, turn_id: str | None = None) -> Any:
         """Invoke the named tool with the given arguments and return its result.
+
+        `turn_id` is accepted for the port and unused: nothing here leaves the
+        process, so there is nothing to correlate.
 
         Raises:
             UnknownToolError: if tool_name is not a recognized tool.
@@ -393,13 +396,16 @@ class SqlToolAdapter():
         if "offset $" not in query_check:
             return {"error": "offset $n should be in the query, params = [..., limit, offset]"}
 
-        if len(params) >= 2:
-            if int(params[-2]) > 100:
-                return {"error": "limit should be less than 100"}
-            if int(params[-1]) > MAX_OFFSET:
-                return {"error": f"offset should be less than {MAX_OFFSET}"}
-        else:
+        if len(params) < 2:
             return {"error": "params must include limit and offset as the last two values"}
+        try:
+            limit, offset = int(params[-2]), int(params[-1])
+        except (TypeError, ValueError):
+            return {"error": "limit and offset must be integers, params = [..., limit, offset]"}
+        if limit > 100:
+            return {"error": "limit should be less than 100"}
+        if offset > MAX_OFFSET:
+            return {"error": f"offset should be less than {MAX_OFFSET}"}
 
         resolved_params = []
         for p in params:

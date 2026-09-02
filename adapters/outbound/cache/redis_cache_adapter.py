@@ -48,7 +48,7 @@ def _is_message_window(value: Any) -> bool:
 class RedisCacheAdapter:
     def __init__(self, redis_client: redis.Redis):
         self._redis = redis_client
-        self._locks: dict[str, Any] = {} # key -> redis lock object, between acquire و release
+        self._locks: dict[str, Any] = {}  # key -> redis lock object, between acquire and release
 
 
     async def get(self, key: str) -> Any:

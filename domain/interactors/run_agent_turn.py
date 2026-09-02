@@ -120,7 +120,7 @@ class RunAgentTurn:
             messages.append(ChatMessage(role=Role.USER, content=user_input))
             new_messages = [ChatMessage(role=Role.USER, content=user_input)]
 
-            loop_result = await self.agent_loop.run(messages)
+            loop_result = await self.agent_loop.run(messages, turn_id=turn_id)
             messages += loop_result.messages
             new_messages += loop_result.messages
             pagination = loop_result.pagination

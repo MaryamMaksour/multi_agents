@@ -5,7 +5,7 @@ import re
 
 from domain.ports.database_port import DatabasePort
 from domain.ports.embedding_port import EmbeddingPort
-from domain.entities.chat_message import ChatMessage, to_plain
+from domain.entities.chat_message import ChatMessage, Role, to_plain
 from domain.exceptions import HistoryError
 from libs.agent_core.pgvector import to_vector_literal
 
@@ -22,6 +22,28 @@ def _as_json(payload: Any) -> str:
     if isinstance(payload, list) and all(isinstance(m, ChatMessage) for m in payload):
         return json.dumps([to_plain(m) for m in payload], ensure_ascii=False)
     return json.dumps(payload, ensure_ascii=False)
+
+
+def _trace_is_clean(final_answer: Any) -> bool:
+    """Whether a turn's trace holds no failed tool call.
+
+    Tool results are JSON text on TOOL messages; a failure is a dict with an
+    `error` key, which is the one shape every adapter uses for one. A turn
+    with any such result is not an example worth imitating, whatever the
+    model said at the end.
+    """
+    if not isinstance(final_answer, list):
+        return True
+    for message in final_answer:
+        if not isinstance(message, ChatMessage) or message.role is not Role.TOOL:
+            continue
+        try:
+            result = json.loads(message.content or "")
+        except (TypeError, ValueError):
+            continue
+        if isinstance(result, dict) and "error" in result:
+            return False
+    return True
 
 
 class PostgresHistoryAdapter:
@@ -80,16 +102,24 @@ class PostgresHistoryAdapter:
     async def log_assistant_final(self, session_id: str, turn_id: str, final_answer: Any, elapsed: float) -> None:
         """Log the final assistant message to the history.
 
+        `valid` is written here, on the row that has the trace to judge: true
+        when no tool call in the turn failed. get_memory reads it from this
+        row. The `user` row cannot carry it - it is written before the answer
+        exists, and the service holds no UPDATE on history.
+
         Raises:
             HistoryError: if the history call fails.
         """
         try:
             sql = f"""
                 INSERT INTO {self._table}
-                (session_id, turn_id, event_type, payload, time)
-                VALUES ($1, $2, 'assistant_final', $3::jsonb, $4)
+                (session_id, turn_id, event_type, payload, time, valid)
+                VALUES ($1, $2, 'assistant_final', $3::jsonb, $4, $5)
             """
-            await self._db.execute(sql, session_id, turn_id, _as_json(final_answer), elapsed)
+            await self._db.execute(
+                sql, session_id, turn_id, _as_json(final_answer), elapsed,
+                _trace_is_clean(final_answer),
+            )
         except Exception as e:
             raise HistoryError(f"Error {e} while logging assistant final answer to {self._table}") from e
 
@@ -135,9 +165,11 @@ class PostgresHistoryAdapter:
         """Retrieve semantically similar past turns from the history.
 
         Returns up to 3 valid examples (question + reasoning trace) and up to
-        3 invalid examples (question + failure reason), deduplicated by the
-        manually-assigned `reason` tag so repeated question patterns don't
-        crowd out other examples.
+        3 invalid examples (question + failure reason). Validity is the
+        `assistant_final` row's `valid`, written by log_assistant_final.
+        Examples are deduplicated by `reason` when one has been assigned, and
+        otherwise by turn - a NULL reason must not collapse every untagged
+        turn into a single example.
 
         Raises:
             HistoryError: if the history call fails.
@@ -147,15 +179,15 @@ class PostgresHistoryAdapter:
 
             good_sql = f"""
                 SELECT * FROM (
-                    SELECT DISTINCT ON (u.reason)
-                        u.payload, u.valid, u.reason, f.time, u.event_type, f.payload AS trace,
+                    SELECT DISTINCT ON (COALESCE(u.reason, u.turn_id::text))
+                        u.payload, f.valid, u.reason, f.time, u.event_type, f.payload AS trace,
                         u.user_message_embed <=> $1::vector AS distance
                     FROM {self._table} u
                     JOIN {self._table} f ON f.turn_id = u.turn_id AND f.event_type = 'assistant_final'
                     WHERE u.event_type = 'user'
-                      AND u.valid = true
+                      AND f.valid = true
                       AND u.created_at >= NOW() - INTERVAL '3 days'
-                    ORDER BY u.reason, u.user_message_embed <=> $1::vector ASC
+                    ORDER BY COALESCE(u.reason, u.turn_id::text), u.user_message_embed <=> $1::vector ASC
                 ) deduped
                 ORDER BY distance ASC
                 LIMIT 3
@@ -164,15 +196,15 @@ class PostgresHistoryAdapter:
 
             bad_sql = f"""
                 SELECT * FROM (
-                    SELECT DISTINCT ON (u.reason)
-                        u.payload, u.valid, u.reason, f.time, u.event_type,
+                    SELECT DISTINCT ON (COALESCE(u.reason, u.turn_id::text))
+                        u.payload, f.valid, u.reason, f.time, u.event_type,
                         u.user_message_embed <=> $1::vector AS distance
                     FROM {self._table} u
                     JOIN {self._table} f ON f.turn_id = u.turn_id AND f.event_type = 'assistant_final'
                     WHERE u.event_type = 'user'
-                      AND u.valid = false
+                      AND f.valid = false
                       AND u.created_at >= NOW() - INTERVAL '3 days'
-                    ORDER BY u.reason, u.user_message_embed <=> $1::vector ASC
+                    ORDER BY COALESCE(u.reason, u.turn_id::text), u.user_message_embed <=> $1::vector ASC
                 ) deduped
                 ORDER BY distance ASC
                 LIMIT 3

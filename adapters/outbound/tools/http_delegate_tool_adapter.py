@@ -25,11 +25,11 @@ class HttpDelegateToolAdapter:
         is raised rather than defaulted, since a placeholder description does
         not fail loudly - it quietly makes an agent unroutable.
 
-        Note what is NOT declared: session_id and turn_id. call_tool reads
-        them from args, but they are correlation values the agent loop injects,
-        not choices the model should make. Leaving them out of the schema is
-        what keeps them out of the model's context, which is the problem the
-        old codebase had to strip back out afterwards.
+        Note what is NOT declared: turn_id. It arrives as call_tool's own
+        parameter, not in args - a correlation value the agent loop supplies,
+        not a choice the model makes. Leaving it out of the schema is what
+        keeps it out of the model's context, which is the problem the old
+        codebase had to strip back out afterwards.
         """
         missing = sorted(set(self._tool_urls) - set(self._tool_descriptions))
         if missing:
@@ -74,8 +74,15 @@ class HttpDelegateToolAdapter:
             for name in self._tool_urls
         ]
 
-    async def call_tool(self, tool_name: str, args: dict) -> Any:
+    async def call_tool(self, tool_name: str, args: dict, turn_id: str | None = None) -> Any:
         """Invoke the named tool with the given arguments and return its result.
+
+        No session_id is sent. The sub-agent keeps no conversation, so the
+        only thing a session id does there is serialise turns - and the
+        orchestrator fans out to several agents concurrently under one
+        session, so sharing it would make the second delegate collide with
+        the first's lock. Each delegated question gets its own session on
+        the far side; `turn_id` is what ties them back together.
 
         Raises:
             UnknownToolError: if tool_name is not a recognized tool.
@@ -90,11 +97,11 @@ class HttpDelegateToolAdapter:
             raise ToolExecutionError(f"{tool_name}: missing or invalid query")
 
         payload = {
-            "session_id": args.get("session_id", ""),
+            "session_id": "",
             "user_input": query,
             "context": {
                 "cursor": args.get("cursor"),
-                "turn_id": args.get("turn_id"),
+                "turn_id": turn_id,
             },
         }
 
