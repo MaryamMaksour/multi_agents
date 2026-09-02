@@ -36,6 +36,10 @@ from domain.exceptions import GrantMismatchError
 from domain.ports.schema_port import SchemaPort
 from libs.agent_core.filter_classifier import DEFAULT_DIST_OP
 from libs.agent_core.schema_bootstrap import AgentSchema, load_agent_schema
+import logging
+from libs.agent_core.logging_setup import Timer, log_event
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -130,16 +134,28 @@ async def start_agent(
             "was taken out of service deliberately."
         )
 
+    # What the database says this role can read, which is the fact the whole
+    # design rests on - the registry's table list is only ever checked against
+    # it. Logged because "the agent answers about no tables" and "the GRANT
+    # was never run" look identical from a health check.
     readable = tuple(await schema_port.list_tables())
+    log_event(logger, "startup.grants", agent=spec.name, db_role=spec.db_role,
+              readable=list(readable), declared=list(spec.tables or []))
+
     verify_grants(spec, readable)
 
     tables = tuple(spec.tables) if spec.tables is not None else readable
-    schema = await load_agent_schema(
-        schema_port,
-        tables=tables,
-        dist_op=dist_op,
-        probe_cardinality=probe_cardinality,
-    )
+    with Timer() as timer:
+        schema = await load_agent_schema(
+            schema_port,
+            tables=tables,
+            dist_op=dist_op,
+            probe_cardinality=probe_cardinality,
+        )
+
+    log_event(logger, "startup.schema", agent=spec.name, ms=timer.ms,
+              tables=list(schema.tables),
+              columns=sum(len(f) for f in schema.filters.values()))
     return ReadyAgent(spec=spec, schema=schema)
 
 

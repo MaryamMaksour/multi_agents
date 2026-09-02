@@ -362,3 +362,38 @@ def test_disabled_level_skips_the_work_entirely():
 
     log_event(logger, "tool.call", level=logging.DEBUG, args={"a": 1})
     assert stream.getvalue() == ""
+
+
+# --- third-party noise ---------------------------------------------------
+
+@pytest.mark.parametrize("logger_name", [
+    "httpx", "httpcore", "httpcore2", "httpcore2._backends.anyio",
+    "openai._base_client", "asyncpg.pool", "redis.connection",
+])
+def test_library_debug_lines_are_dropped(logger_name):
+    """Matched by prefix, not by exact name.
+
+    A list of exact names only silences the names on the list: this system
+    named "httpcore", the package became `httpcore2`, and LOG_LEVEL=DEBUG went
+    back to eight lines per model call about TCP connects. A filter catches
+    whatever the next version calls itself.
+    """
+    noise = logging.LogRecord(logger_name, logging.DEBUG, __file__, 1,
+                              "connect_tcp.started", None, None)
+    assert logging_setup._ThirdPartyNoiseFilter().filter(noise) is False
+
+
+@pytest.mark.parametrize("level", [logging.WARNING, logging.ERROR])
+def test_library_warnings_are_kept(level):
+    """"Retrying request" from the OpenAI client and "connection pool
+    exhausted" from asyncpg are the lines that explain a slow turn. Silencing
+    a whole library is how those get lost."""
+    record = logging.LogRecord("openai._base_client", level, __file__, 1,
+                               "Retrying request in 2s", None, None)
+    assert logging_setup._ThirdPartyNoiseFilter().filter(record) is True
+
+
+def test_our_own_debug_lines_survive():
+    record = logging.LogRecord("adapters.outbound.db.postgres_db_adapter",
+                               logging.DEBUG, __file__, 1, "db.query", None, None)
+    assert logging_setup._ThirdPartyNoiseFilter().filter(record) is True

@@ -297,6 +297,30 @@ def _compact(value: Any) -> str:
 
 
 # --- setup ----------------------------------------------------------------
+# Libraries whose DEBUG output is about their own internals rather than about
+# this system. Matched as a prefix, so httpcore2, httpx._client and anything
+# else under these roots is covered without naming each one.
+_NOISY_ROOTS = ("httpx", "httpcore", "urllib3", "openai", "anyio", "asyncio",
+                "aiohttp", "redis", "asyncpg", "langchain", "langgraph",
+                "langsmith", "watchfiles", "multipart")
+
+
+class _ThirdPartyNoiseFilter(logging.Filter):
+    """Drop DEBUG and INFO from noisy libraries; keep their warnings.
+
+    Warnings and errors are kept deliberately. "Retrying request" from the
+    OpenAI client and "connection pool exhausted" from asyncpg are exactly the
+    lines that explain a slow turn, and dropping a whole library is how those
+    get lost.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno >= logging.WARNING:
+            return True
+        root = record.name.split(".")[0]
+        return not any(root.startswith(noisy) for noisy in _NOISY_ROOTS)
+
+
 _configured = False
 
 
@@ -333,13 +357,17 @@ def configure_logging(force: bool = False) -> None:
         uvicorn_logger.handlers = []
         uvicorn_logger.propagate = True
 
-    # These are chatty at DEBUG and say nothing this system needs: httpx logs
-    # every request line, asyncio logs selector internals. Raised one notch so
-    # LOG_LEVEL=DEBUG stays readable and remains a thing anyone will turn on.
-    for name, floor in (("httpx", logging.WARNING), ("httpcore", logging.WARNING),
-                        ("asyncio", logging.WARNING), ("openai", logging.WARNING),
-                        ("urllib3", logging.WARNING)):
-        logging.getLogger(name).setLevel(max(floor, root.level))
+    # Third-party chatter is filtered by prefix rather than by exact logger
+    # name, and that is the whole reason it is a filter.
+    #
+    # setLevel on a list of names only works for the names on the list.
+    # LOG_LEVEL=DEBUG on this system produced eight lines per model call from
+    # `httpcore2` - connect_tcp.started, send_request_headers.complete,
+    # response_closed.complete - because the list said "httpcore" and the
+    # package had been renamed. A filter on the handler catches whatever the
+    # next version calls itself, and applies to loggers created long after
+    # this function has run.
+    handler.addFilter(_ThirdPartyNoiseFilter())
 
     _configured = True
 

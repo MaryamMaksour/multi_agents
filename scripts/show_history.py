@@ -184,6 +184,15 @@ def render_trace(messages: list[dict], full: bool) -> None:
             continue  # already printed as QUESTION
 
         if role == "assistant":
+            # What the model thought, when the provider returned it. Printed
+            # before the actions it explains, which is the order it happened
+            # in - and it is usually the line that names the mistake outright
+            # where the tool arguments only imply it.
+            reasoning = message.get("reasoning")
+            if reasoning and str(reasoning).strip():
+                body = textwrap.indent(str(reasoning).strip(), " " * 10).lstrip()
+                print(_c("THINKS    ", "1;34") + _c(_clip(body, 1200, full), "34"))
+
             # Text alongside tool calls is the model narrating its plan; text
             # on its own, at the end, is the answer.
             if content and str(content).strip():

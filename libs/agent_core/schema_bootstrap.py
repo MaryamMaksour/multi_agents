@@ -33,6 +33,7 @@ swallowed, so a caller can say why the guidance is thinner than expected.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from domain.entities.column_filter import ENUM_MAX_DISTINCT, ColumnFilter, FilterKind
@@ -44,6 +45,9 @@ from libs.agent_core.filter_classifier import (
     classify_column,
     classify_table,
 )
+from libs.agent_core.logging_setup import log_event
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -146,8 +150,17 @@ async def read_enum_values(
                 table.name, column.name, ENUM_MAX_DISTINCT
             )
         except DatabaseError:
+            # Per column and never raised - but a column that classifies as
+            # ENUM and whose values could not be read is a column the model
+            # will be told to call get_lsit_values on, and that call will fail
+            # the same way. Worth a line.
             unread.append(f"{table.name}.{column.name}")
+            log_event(logger, "startup.enum_unreadable", level=logging.WARNING,
+                      table=table.name, column=column.name)
 
+    if values:
+        log_event(logger, "startup.enums", level=logging.DEBUG, table=table.name,
+                  columns={name: list(vals) for name, vals in values.items()})
     return values, tuple(unread)
 
 
@@ -166,7 +179,12 @@ async def count_distinct_values(
         try:
             counts[column] = await schema_port.distinct_count(table.name, column)
         except DatabaseError:
+            # The column stays TEXT, which is a silent downgrade: its guidance
+            # stops naming the values tool, so the model filters on it by
+            # guessing at spellings instead of matching one it was shown.
             unprobed.append(f"{table.name}.{column}")
+            log_event(logger, "startup.probe_failed", level=logging.WARNING,
+                      table=table.name, column=column)
 
     return counts, tuple(unprobed)
 
@@ -215,6 +233,14 @@ async def load_agent_schema(
         schema[key] = {"columns": render_columns(table, values)}
         classified[key] = column_filters
         filters[key] = {name: cf.guidance for name, cf in column_filters.items()}
+
+    if unprobed:
+        # One summary line as well as the per-column ones, because this is the
+        # number that says how much of the schema the agent is working blind
+        # on - and a startup with twenty of these is a permissions problem,
+        # not twenty separate accidents.
+        log_event(logger, "startup.unprobed", level=logging.WARNING,
+                  count=len(unprobed), columns=unprobed[:20])
 
     return AgentSchema(
         tables=tuple(sorted(schema)),
