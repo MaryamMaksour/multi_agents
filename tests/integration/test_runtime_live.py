@@ -20,6 +20,7 @@ when either is unreachable.
 from __future__ import annotations
 
 import os
+import uuid
 
 import pytest
 
@@ -29,7 +30,48 @@ pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+from adapters.outbound.db.postgres_db_adapter import PostgresDatabaseAdapter  # noqa: E402
+from adapters.outbound.history.postgres_history_adapter import (  # noqa: E402
+    PostgresHistoryAdapter,
+)
+from domain.entities.chat_message import ChatMessage, Role, ToolCall  # noqa: E402
+
 pytestmark = pytest.mark.integration
+
+EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "1024"))
+
+
+def dev_dsn() -> dict:
+    """The owner, because these two tests write history rows.
+
+    The authenticator could insert them - seeds/004_history.sql grants it
+    SELECT and INSERT - but not delete them afterwards, and deliberately so:
+    a service that can rewrite its own audit trail has one that means less
+    than it appears to. Cleaning up after a test is the owner's job.
+    """
+    return dict(host=os.getenv("PGHOST", "localhost"),
+                port=int(os.getenv("PGPORT", "55432")),
+                database=os.getenv("PGDATABASE", "library_dev"),
+                user=os.getenv("PGUSER", "dev"),
+                password=os.getenv("PGPASSWORD", "dev"))
+
+
+class FixedEmbeddings:
+    """Every text embeds to nearly the same vector.
+
+    The distance ordering is not what these tests are about - whether a row
+    comes back at all is - and a real embedding call would make them cost
+    money and need a key.
+    """
+
+    def __init__(self):
+        self.calls: list[str] = []
+
+    async def embed(self, text: str) -> list[float]:
+        self.calls.append(text)
+        vector = [0.01] * EMBEDDING_DIM
+        vector[len(text) % EMBEDDING_DIM] = 0.02
+        return vector
 
 ENVIRONMENT = {
     "PG_HOST": os.getenv("PGHOST", "localhost"),
@@ -283,3 +325,91 @@ def test_the_orchestrator_container_refuses_the_sub_agent_endpoint(environment):
 
     assert response.status_code == 404
     assert "/ask" in response.json()["detail"]
+
+
+# --------------------------------------------------------------------------
+# memory, which had never returned anything
+# --------------------------------------------------------------------------
+
+
+async def test_a_recorded_turn_can_be_recalled_as_an_example():
+    """The feature that was wired up and could not work.
+
+    `valid` and `reason` were filtered on by get_memory and written by
+    nothing, so every row had valid NULL, `valid = true` matched nothing, and
+    get_memory returned an empty list for every question - after paying for an
+    embedding call to build the vector it then compared against nothing.
+
+    Written from both ends here: log a turn through the adapter, ask for it
+    back by a differently-worded question, and require it to come out.
+    """
+    embeddings = FixedEmbeddings()
+    pool = await asyncpg.create_pool(**dev_dsn(), min_size=1, max_size=2)
+    session = f"memory-{uuid.uuid4()}"
+
+    try:
+        history = PostgresHistoryAdapter(
+            db=PostgresDatabaseAdapter(pool), embeddings=embeddings,
+            table_name="history_catalog", embedding_dim=EMBEDDING_DIM,
+        )
+        turn_id = str(uuid.uuid4())
+
+        await history.log_user_message(
+            session_id=session, turn_id=turn_id,
+            message="How many English novels are under 400 pages?")
+        await history.log_assistant_final(
+            session_id=session, turn_id=turn_id, elapsed=1.2,
+            final_answer=[
+                ChatMessage(role=Role.USER, content="How many English novels?"),
+                ChatMessage(role=Role.ASSISTANT, content="",
+                            tool_calls=[ToolCall(id="c1", name="db_execute", args={})]),
+                ChatMessage(role=Role.TOOL, tool_call_id="c1",
+                            content='{"rows": [{"n": 12}], "row_count": 12}'),
+                ChatMessage(role=Role.ASSISTANT, content="There are 12."),
+            ])
+
+        examples = await history.get_memory(query="how many novels in English?")
+
+        assert examples, "get_memory returned nothing for a turn it had just recorded"
+        valid = [e for e in examples if "valid_examples" in e]
+        assert valid, f"the recorded turn was not offered as a valid example: {examples}"
+    finally:
+        async with pool.acquire() as conn:
+            await conn.execute("DELETE FROM history_catalog WHERE session_id = $1",
+                               session)
+        await pool.close()
+
+
+async def test_a_turn_whose_tool_failed_is_recalled_as_a_counter_example():
+    """The other half. A failure is worth showing the model too - as a
+    failure, not as something to copy."""
+    embeddings = FixedEmbeddings()
+    pool = await asyncpg.create_pool(**dev_dsn(), min_size=1, max_size=2)
+    session = f"memory-bad-{uuid.uuid4()}"
+
+    try:
+        history = PostgresHistoryAdapter(
+            db=PostgresDatabaseAdapter(pool), embeddings=embeddings,
+            table_name="history_catalog", embedding_dim=EMBEDDING_DIM,
+        )
+        turn_id = str(uuid.uuid4())
+
+        await history.log_user_message(session_id=session, turn_id=turn_id,
+                                       message="How many overdue loans?")
+        await history.log_assistant_final(
+            session_id=session, turn_id=turn_id, elapsed=0.9,
+            final_answer=[
+                ChatMessage(role=Role.ASSISTANT, content="",
+                            tool_calls=[ToolCall(id="c1", name="db_execute", args={})]),
+                ChatMessage(role=Role.TOOL, tool_call_id="c1",
+                            content='{"error": "permission denied for table loans"}'),
+                ChatMessage(role=Role.ASSISTANT, content="I cannot see loans."),
+            ])
+
+        examples = await history.get_memory(query="overdue loans count")
+        assert any("invalid_examples" in e for e in examples), examples
+    finally:
+        async with pool.acquire() as conn:
+            await conn.execute("DELETE FROM history_catalog WHERE session_id = $1",
+                               session)
+        await pool.close()
