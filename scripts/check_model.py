@@ -28,6 +28,9 @@ import urllib.request
 BASE_URL = os.getenv("QWEN_API_URL", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
 API_KEY = os.getenv("QWEN_API_KEY", "")
 
+# Read the same way config.py reads it, so this probes what the service sends.
+MAX_TOKENS = int(os.getenv("QWEN_MAX_TOKENS", "8192"))
+
 # Ordered cheapest-first, because the cheapest model that can call a tool is
 # usually the right one for the sub-agents - they do narrow work with the
 # strategy already handed to them by get_filter.
@@ -51,7 +54,18 @@ PROBE = {
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     }],
-    "max_tokens": 64,
+    # The value the service will actually send, not a small safe one.
+    #
+    # This was 64, which every model accepts - so the check passed for
+    # qwen-max while the service, sending QWEN_MAX_TOKENS, was refused with
+    #
+    #     400 InternalError.Algo.InvalidParameter:
+    #     Range of max_tokens should be [1, 8192]
+    #
+    # on every question. A check that probes a configuration the system does
+    # not use answers a question nobody asked; the point is to find out
+    # whether *this deployment* can call *this model*.
+    "max_tokens": MAX_TOKENS,
 }
 
 
@@ -72,6 +86,11 @@ def ask(model: str) -> tuple[str, str]:
             message = json.loads(raw)["error"]["message"]
         except Exception:
             message = raw[:120]
+        if e.code == 400 and "max_tokens" in message:
+            # The account has the model; the request shape is wrong. A
+            # different fix entirely, and "no access" would send someone to
+            # Model Studio to enable something already enabled.
+            return "max_tokens", f"{message[:70]} (sent {MAX_TOKENS})"
         return "no access", f"{e.code} {message[:90]}"
     except urllib.error.URLError as e:
         return "unreachable", str(e)[:90]
@@ -145,7 +164,8 @@ def main() -> None:
     if not API_KEY:
         sys.exit("QWEN_API_KEY is not set in this shell.")
 
-    print(f"endpoint: {BASE_URL}\n")
+    print(f"endpoint: {BASE_URL}")
+    print(f"max_tokens: {MAX_TOKENS}\n")
     width = max(len(m) for m in (args.models or CANDIDATES)) + 2
     print(f"{'model':<{width}}{'verdict':<13}detail")
     print("-" * 78)
@@ -169,6 +189,8 @@ def main() -> None:
         print(
             "None of these can call a tool with this key.\n"
             "'no access' means the model needs activating in Model Studio.\n"
+            "'max_tokens' means the model is available but rejects the "
+            "configured QWEN_MAX_TOKENS - lower it; qwen-max caps at 8192.\n"
             "'no tools' means it answered in prose - it cannot drive this system,\n"
             "and would fail silently rather than loudly if used."
         )
