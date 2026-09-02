@@ -245,3 +245,35 @@ def test_real_urls_pass(monkeypatch):
     monkeypatch.setenv("EMBED_API_KEY", "local")
 
     importlib.reload(config_module).validate()
+
+
+# --------------------------------------------------------------------------
+# enable_thinking policy
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("model, setting, expected", [
+    ("qwen3-14b", "", {"enable_thinking": False}),     # hybrid model: must send false
+    ("Qwen3-Coder-480B", "", {"enable_thinking": False}),
+    ("qwen-plus", "", None),                            # not hybrid: nothing sent
+    ("gpt-4.1", "", None),                              # strict endpoint: nothing sent
+    ("gpt-4.1", "false", {"enable_thinking": False}),   # explicit override wins
+    ("qwen3-14b", "true", {"enable_thinking": True}),
+    ("qwen3-14b", "none", None),                        # explicit opt-out
+])
+def test_enable_thinking_is_inferred_from_the_model_unless_forced(model, setting, expected):
+    assert config_module.llm_extra_body(model, setting) == expected
+
+
+def test_enable_thinking_defaults_come_from_the_environment(monkeypatch):
+    for name, value in FULL_ENV.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("QWEN_MODEL", "qwen3-14b")
+    monkeypatch.delenv("QWEN_ENABLE_THINKING", raising=False)
+
+    config = importlib.reload(config_module)
+    assert config.llm_extra_body() == {"enable_thinking": False}
+
+    monkeypatch.setenv("QWEN_MODEL", "gpt-4.1")
+    config = importlib.reload(config_module)
+    assert config.llm_extra_body() is None

@@ -32,9 +32,23 @@ QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen3-14b")
 QWEN_TEMPERATURE = float(os.getenv("QWEN_TEMPERATURE", "0.1"))
 QWEN_MAX_TOKENS = int(os.getenv("QWEN_MAX_TOKENS", "32000"))
 # Qwen3 hybrid-thinking models (qwen3-*) reject non-streaming calls unless
-# enable_thinking is explicitly false. Non-Qwen endpoints may reject unknown
-# parameters, so the flag is only sent when set. "" means: send nothing.
-QWEN_ENABLE_THINKING = os.getenv("QWEN_ENABLE_THINKING", "false")
+# enable_thinking is explicitly false, while strict OpenAI-compatible
+# endpoints reject the parameter altogether. Unset means: infer from the
+# model name - qwen3-* gets false, anything else gets nothing. "true" /
+# "false" force it; "none" forces it off for a qwen3-* model.
+QWEN_ENABLE_THINKING = os.getenv("QWEN_ENABLE_THINKING", "")
+
+
+def llm_extra_body(model: str | None = None, enable_thinking: str | None = None) -> dict | None:
+    """Provider-specific request fields for the chat call, or None."""
+    model = QWEN_MODEL if model is None else model
+    setting = (QWEN_ENABLE_THINKING if enable_thinking is None else enable_thinking).strip().lower()
+    if setting in ("true", "false"):
+        return {"enable_thinking": setting == "true"}
+    if setting == "" and model.lower().startswith("qwen3"):
+        return {"enable_thinking": False}
+    return None
+
 
 QWEN_EMBED_MODEL = os.getenv("QWEN_EMBED_MODEL", "text-embedding-v3")
 

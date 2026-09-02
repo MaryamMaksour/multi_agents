@@ -376,9 +376,7 @@ async def open_runtime(agent_key: str | None = None) -> Runtime:
 
     embeddings = QwenEmbeddingAdapter(embed_client, config.QWEN_EMBED_MODEL)
 
-    extra_body = None
-    if config.QWEN_ENABLE_THINKING:
-        extra_body = {"enable_thinking": config.QWEN_ENABLE_THINKING.lower() == "true"}
+    extra_body = config.llm_extra_body()
 
     def llm_factory(tool_schemas):
         return QwenLLMAdapter(
