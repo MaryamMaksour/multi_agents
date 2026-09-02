@@ -277,3 +277,22 @@ def test_enable_thinking_defaults_come_from_the_environment(monkeypatch):
     monkeypatch.setenv("QWEN_MODEL", "gpt-4.1")
     config = importlib.reload(config_module)
     assert config.llm_extra_body() is None
+
+
+def test_an_unknown_enable_thinking_value_is_refused_at_startup(monkeypatch):
+    for name, value in FULL_ENV.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("QWEN_ENABLE_THINKING", "flase")
+
+    config = importlib.reload(config_module)
+    with pytest.raises(RuntimeError, match="QWEN_ENABLE_THINKING"):
+        config.validate()
+
+
+@pytest.mark.parametrize("value", ["", "true", "False", "none"])
+def test_documented_enable_thinking_values_pass(monkeypatch, value):
+    for name, value_ in FULL_ENV.items():
+        monkeypatch.setenv(name, value_)
+    monkeypatch.setenv("QWEN_ENABLE_THINKING", value)
+
+    importlib.reload(config_module).validate()

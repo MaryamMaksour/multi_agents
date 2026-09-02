@@ -38,6 +38,7 @@ QWEN_MAX_TOKENS = int(os.getenv("QWEN_MAX_TOKENS", "8192"))
 # model name - qwen3-* gets false, anything else gets nothing. "true" /
 # "false" force it; "none" forces it off for a qwen3-* model.
 QWEN_ENABLE_THINKING = os.getenv("QWEN_ENABLE_THINKING", "")
+_ENABLE_THINKING_VALUES = ("", "true", "false", "none")
 
 
 def llm_extra_body(model: str | None = None, enable_thinking: str | None = None) -> dict | None:
@@ -167,6 +168,12 @@ def validate() -> None:
             "EMBED_API_URL is set but EMBED_API_KEY is empty. A local server "
             "usually ignores the key, but it still has to be present - pass any "
             "non-empty value."
+        )
+
+    if QWEN_ENABLE_THINKING.strip().lower() not in _ENABLE_THINKING_VALUES:
+        raise RuntimeError(
+            f"QWEN_ENABLE_THINKING={QWEN_ENABLE_THINKING!r} is not one of "
+            "'' (infer from QWEN_MODEL), 'true', 'false', 'none'."
         )
 
     # A URL where a model name was meant, or the reverse. Easy to do when
