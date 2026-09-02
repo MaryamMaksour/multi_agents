@@ -85,7 +85,8 @@ def _usage_fields(response: Any) -> dict:
 
 class QwenLLMAdapter:
     def __init__(self, client: AsyncOpenAI, model: str, temperature: float, max_tokens: int,
-                 tools: list[dict] | None = None, enable_thinking: bool = False):
+                 tools: list[dict] | None = None, enable_thinking: bool = False,
+                 extra_body: dict | None = None):
         self._client = client
         self._model = model
         self._temperature = temperature
@@ -95,6 +96,10 @@ class QwenLLMAdapter:
         # DashScope refuses enable_thinking on a non-streaming call, so this
         # decides between two code paths below.
         self._enable_thinking = enable_thinking
+        # Whatever else this deployment's provider wants. Sent on both paths,
+        # so a model that needs a field to answer at all needs it whether or
+        # not thinking is on.
+        self._extra_body = dict(extra_body or {})
 
     @staticmethod
     def _to_provider_message(msg: ChatMessage) -> dict:
@@ -193,7 +198,11 @@ class QwenLLMAdapter:
             # schema, passed through as-is - which is also why a provider
             # that does not know it may reject the call, and why this is off
             # by default.
-            extra_body={"enable_thinking": True},
+            # The deployment's fields first, then the one this path is for -
+            # so QWEN_ENABLE_THINKING remains the switch that decides thinking
+            # mode, and QWEN_EXTRA_BODY cannot quietly turn it off while the
+            # code is streaming for it.
+            extra_body={**self._extra_body, "enable_thinking": True},
             stream_options={"include_usage": True},
         )
 
@@ -259,6 +268,12 @@ class QwenLLMAdapter:
                         tools=self._tools,
                         temperature=self._temperature,
                         max_tokens=self._max_tokens,
+                        # Omitted entirely when empty: an empty extra_body is
+                        # not the same as no extra_body to every client, and
+                        # the default path should send exactly what it sent
+                        # before this existed.
+                        **({"extra_body": self._extra_body}
+                           if self._extra_body else {}),
                     )
         except Exception as e:
             # Two records on purpose. The event line is what a log search

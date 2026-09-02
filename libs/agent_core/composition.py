@@ -385,6 +385,7 @@ async def open_runtime(agent_key: str | None = None) -> Runtime:
             temperature=config.QWEN_TEMPERATURE, max_tokens=config.QWEN_MAX_TOKENS,
             tools=tool_schemas,
             enable_thinking=config.QWEN_ENABLE_THINKING,
+            extra_body=config.QWEN_EXTRA_BODY,
         )
 
     # History is written by the service, not by an agent, so it goes through

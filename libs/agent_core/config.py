@@ -20,6 +20,7 @@ configuration compiled into every service.
 
 from __future__ import annotations
 
+import json
 import os
 
 # --- Qwen / any OpenAI-compatible endpoint -------------------------------
@@ -85,6 +86,40 @@ QWEN_MAX_TOKENS = int(os.getenv("QWEN_MAX_TOKENS", "8192"))
 # A model that returns reasoning without being asked - which several do - is
 # captured either way, with none of that.
 QWEN_ENABLE_THINKING = os.getenv("QWEN_ENABLE_THINKING", "false").lower() == "true"
+
+# Provider-specific request fields, as JSON, merged into every model call.
+#
+# An escape hatch, and deliberately a blunt one. Providers keep parameters
+# outside the OpenAI schema - Qwen's own `enable_thinking` is one - and the
+# ones a given model needs are not discoverable before the call. Without this,
+# finding out that some model wants one more field means editing an adapter,
+# rebuilding an image and pushing a commit, for a value that belongs to a
+# deployment rather than to the code.
+#
+#     QWEN_EXTRA_BODY='{"enable_thinking": false}'
+#
+# Parsed at import so a malformed value fails at startup, next to the variable
+# that caused it, rather than inside the first model call of the first
+# question. Keys here win over nothing: QWEN_ENABLE_THINKING is applied after,
+# so the dedicated switch stays the one that decides thinking mode.
+def _parse_extra_body(raw: str) -> dict:
+    if not raw.strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except ValueError as e:
+        raise RuntimeError(
+            f"QWEN_EXTRA_BODY is not valid JSON: {e}. It is passed to the "
+            'provider as request fields, e.g. \'{"enable_thinking": false}\'.'
+        ) from e
+    if not isinstance(parsed, dict):
+        raise RuntimeError(
+            f"QWEN_EXTRA_BODY must be a JSON object, got {type(parsed).__name__}."
+        )
+    return parsed
+
+
+QWEN_EXTRA_BODY = _parse_extra_body(os.getenv("QWEN_EXTRA_BODY", ""))
 
 QWEN_EMBED_MODEL = os.getenv("QWEN_EMBED_MODEL", "text-embedding-v3")
 

@@ -51,6 +51,10 @@ x-agent-base: &agent-base
     # qwen-max rejects anything above 8192 with a 400, so this is the value
     # the whole family accepts rather than the largest any one of them allows.
     QWEN_MAX_TOKENS: ${QWEN_MAX_TOKENS:-8192}
+    # Provider fields outside the OpenAI schema, as JSON. Empty for
+    # qwen-plus and qwen-max; qwen3-* reasoning models may want
+    # {"enable_thinking": false} for a plain non-streaming call.
+    QWEN_EXTRA_BODY: ${QWEN_EXTRA_BODY:-}
     QWEN_EMBED_MODEL: ${QWEN_EMBED_MODEL:-text-embedding-v3}
     # Unset means "same endpoint as chat". Set them to run embeddings
     # somewhere else - a second vLLM, or a local server - without touching

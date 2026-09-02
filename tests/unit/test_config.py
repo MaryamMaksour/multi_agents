@@ -66,7 +66,13 @@ def test_importing_opens_no_connections(config):
     suspicious = [
         name for name, value in vars(config).items()
         if not name.startswith("_")
-        and not isinstance(value, (str, int, float, bool, tuple, frozenset, type(None)))
+        # dict is on this list for QWEN_EXTRA_BODY, which is JSON parsed at
+        # import - inert data, like every other value here. What the test
+        # guards against is a *live* object: a client, a pool, a socket. Those
+        # are none of these types, so widening it by one plain container does
+        # not weaken it.
+        and not isinstance(value, (str, int, float, bool, tuple, frozenset,
+                                   dict, list, type(None)))
         and not callable(value)
         and not inspect.ismodule(value)
         and not isinstance(value, __future__._Feature)

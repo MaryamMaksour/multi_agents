@@ -229,3 +229,57 @@ async def test_a_fragment_with_no_id_gets_a_stable_one():
         delta(finish="tool_calls"),
     ])
     assert result.tool_calls[0].id
+
+
+# --- provider-specific request fields ------------------------------------
+
+@pytest.mark.asyncio
+async def test_extra_body_reaches_the_plain_request():
+    """The escape hatch exists because the field a given model needs is not
+    discoverable before the call, and finding out should not mean editing an
+    adapter and rebuilding an image."""
+    class PlainClient(FakeStreamingClient):
+        async def _create(self, **kwargs):
+            self.kwargs = kwargs
+            return SimpleNamespace(choices=[SimpleNamespace(
+                message=SimpleNamespace(content="hi", tool_calls=None),
+                finish_reason="stop")], usage=None)
+
+    client = PlainClient([])
+    adapter_ = QwenLLMAdapter(client=client, model="qwen3-14b", temperature=0.1,
+                              max_tokens=8192,
+                              extra_body={"enable_thinking": False})
+    await adapter_.achat([ChatMessage(role=Role.USER, content="q")])
+
+    assert client.kwargs["extra_body"] == {"enable_thinking": False}
+
+
+@pytest.mark.asyncio
+async def test_no_extra_body_sends_no_extra_body():
+    """An empty dict is not the same as absent to every client, and the
+    default path must send exactly what it sent before this existed."""
+    class PlainClient(FakeStreamingClient):
+        async def _create(self, **kwargs):
+            self.kwargs = kwargs
+            return SimpleNamespace(choices=[SimpleNamespace(
+                message=SimpleNamespace(content="hi", tool_calls=None),
+                finish_reason="stop")], usage=None)
+
+    client = PlainClient([])
+    await QwenLLMAdapter(client=client, model="qwen-plus", temperature=0.1,
+                         max_tokens=8192).achat(
+        [ChatMessage(role=Role.USER, content="q")])
+
+    assert "extra_body" not in client.kwargs
+
+
+@pytest.mark.asyncio
+async def test_thinking_mode_merges_but_keeps_the_switch_authoritative():
+    """QWEN_EXTRA_BODY must not be able to turn thinking off while the code is
+    streaming for it - the two would disagree and the stream would carry no
+    reasoning, silently."""
+    result, client = await reply(
+        [delta(content="hi"), delta(finish="stop")],
+        extra_body={"enable_thinking": False, "seed": 7},
+    )
+    assert client.kwargs["extra_body"] == {"enable_thinking": True, "seed": 7}
