@@ -210,7 +210,7 @@ def build_guidance(table, column, kind, dist_op: str = DEFAULT_DIST_OP,
             )
         return (
             f"A short list of distinct values. Call "
-            f"get_lsit_values('{table.name}', '{column.name}') before "
+            f"get_list_values('{table.name}', '{column.name}') before "
             f"filtering, then match exactly with = against a value it returns, "
             f"so you match what is stored rather than what the question called "
             f"it."
@@ -220,7 +220,7 @@ def build_guidance(table, column, kind, dist_op: str = DEFAULT_DIST_OP,
         return (
             f"Free text with many distinct values. Match with = for a whole "
             f"value or ILIKE '%...%' for a fragment. Do not call "
-            f"get_lsit_values on it - there are too many values for the list to "
+            f"get_list_values on it - there are too many values for the list to "
             f"be useful."
         )
 

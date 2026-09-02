@@ -5,7 +5,7 @@ from operator import add as add_messages
 
 from domain.entities.chat_message import ChatMessage, Role, ToolCall
 from domain.entities.agent_turn import AgentTurnResult, PaginationState
-from domain.exceptions import UnknownToolError, ToolExecutionError, LLMRequestError
+from domain.exceptions import UnknownToolError, ToolExecutionError
 from domain.ports.llm_port import LLMPort
 from domain.ports.tool_port import ToolPort
 

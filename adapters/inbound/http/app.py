@@ -30,8 +30,6 @@ from adapters.inbound.http.schemas import (
 from domain.entities.chat_message import Role
 from domain.exceptions import (
     DomainError,
-    GrantMismatchError,
-    RegistryError,
     SessionBusyError,
     UnknownAgentError,
 )

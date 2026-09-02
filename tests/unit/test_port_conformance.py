@@ -102,7 +102,7 @@ def test_the_sql_tool_adapter_declares_every_tool_it_dispatches():
     a name in one and not the other is an UnknownToolError mid-answer."""
     adapter = SqlToolAdapter(
         db=None, embeddings=None, cache=None, allowed_tables=[], schema={},
-        filters={}, lsit_values={}, dist_op="<=>", vector_ttl_seconds=900,
+        filters={}, dist_op="<=>", vector_ttl_seconds=900,
     )
     declared = {s["function"]["name"] for s in adapter.get_tool_schemas()}
     assert declared <= set(adapter._handlers)

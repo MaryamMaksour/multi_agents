@@ -214,7 +214,7 @@ async def test_startup_output_drives_a_real_sql_tool_adapter():
             allowed_tables=list(ready.allowed_tables),
             schema=ready.schema.schema,
             filters=ready.schema.filters,
-            lsit_values={}, dist_op="<=>", vector_ttl_seconds=900,
+            dist_op="<=>", vector_ttl_seconds=900,
         )
 
         guidance = await adapter.call_tool(

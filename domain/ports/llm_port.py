@@ -1,4 +1,4 @@
-from domain.entities.chat_message import ChatMessage, ToolCall
+from domain.entities.chat_message import ChatMessage
 
 from typing import Protocol, List
 

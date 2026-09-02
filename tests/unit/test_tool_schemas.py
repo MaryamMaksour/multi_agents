@@ -32,7 +32,7 @@ def sql_adapter() -> SqlToolAdapter:
     return SqlToolAdapter(
         db=None, embeddings=None, cache=None,
         allowed_tables=["books", "authors"],
-        schema={}, filters={}, lsit_values={},
+        schema={}, filters={},
         dist_op="<=>", vector_ttl_seconds=900,
     )
 
@@ -94,14 +94,6 @@ def test_tool_names_are_unique(schemas):
 # --------------------------------------------------------------------------
 
 
-# Dispatchable, deliberately not declared. get_table_records selects `row_txt`
-# ordered by an `embedding` column, and neither exists in any schema this
-# design produces - so declaring it told the model about a tool that fails on
-# every call. The handler stays until whole-row search is rebuilt or dropped;
-# see docs/deferred.md.
-WITHHELD_FROM_THE_MODEL = {"get_table_records"}
-
-
 def test_every_declared_sql_tool_is_dispatchable():
     """The direction that fails at runtime: a name the model is told about
     and the dispatcher does not know raises UnknownToolError mid-answer."""
@@ -110,21 +102,12 @@ def test_every_declared_sql_tool_is_dispatchable():
     assert declared <= set(adapter._handlers)
 
 
-def test_nothing_is_withheld_from_the_model_by_accident():
-    """The other direction is not an error - a handler may be withheld on
-    purpose - but it must be on purpose. An unlisted one here is a tool
-    nobody decided to hide."""
+def test_every_dispatchable_sql_tool_is_declared():
+    """The other direction: a handler the model is never told about is dead
+    code, or a tool nobody decided to hide."""
     adapter = sql_adapter()
     declared = {s["function"]["name"] for s in adapter.get_tool_schemas()}
-    assert set(adapter._handlers) - declared == WITHHELD_FROM_THE_MODEL
-
-
-def test_a_withheld_tool_is_still_reachable_if_something_calls_it():
-    """Withheld from the model, not deleted. Removing the handler as well is
-    the larger decision this is deferring."""
-    adapter = sql_adapter()
-    for name in WITHHELD_FROM_THE_MODEL:
-        assert name in adapter._handlers
+    assert set(adapter._handlers) == declared
 
 
 def test_sql_declared_properties_are_accepted_by_their_handlers():
@@ -148,11 +131,11 @@ def test_sql_required_matches_the_parameters_without_defaults():
 
 
 def test_the_misspelled_tool_name_is_preserved():
-    """get_lsit_values is a typo, but call_tool dispatches on that string, so
+    """get_list_values is a typo, but call_tool dispatches on that string, so
     correcting it here alone would break every call. It is renamed in both
     places or in neither."""
     adapter = sql_adapter()
-    assert "get_lsit_values" in {s["function"]["name"] for s in adapter.get_tool_schemas()}
+    assert "get_list_values" in {s["function"]["name"] for s in adapter.get_tool_schemas()}
 
 
 def test_sql_descriptions_are_substantial():

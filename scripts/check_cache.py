@@ -45,7 +45,7 @@ def real_tool_schemas() -> list[dict]:
     """
     adapter = SqlToolAdapter(
         db=None, embeddings=None, cache=None, allowed_tables=["books"],
-        schema={}, filters={}, lsit_values={}, dist_op="<=>", vector_ttl_seconds=1,
+        schema={}, filters={}, dist_op="<=>", vector_ttl_seconds=1,
     )
     return adapter.get_tool_schemas()
 
