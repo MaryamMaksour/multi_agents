@@ -28,7 +28,9 @@ import os
 # not a code change - the adapter is the same either way.
 QWEN_API_KEY = os.getenv("QWEN_API_KEY", "")
 QWEN_API_URL = os.getenv("QWEN_API_URL", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
-QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen3-14b")
+# qwen-plus delegates reliably as the orchestrator; qwen3-14b (thinking off)
+# tends to narrate its plan instead of emitting tool calls.
+QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen-plus")
 QWEN_TEMPERATURE = float(os.getenv("QWEN_TEMPERATURE", "0.1"))
 # Completion length, not context. DashScope caps qwen3-* at 8192.
 QWEN_MAX_TOKENS = int(os.getenv("QWEN_MAX_TOKENS", "8192"))
