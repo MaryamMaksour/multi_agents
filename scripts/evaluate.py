@@ -36,6 +36,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 ORCHESTRATOR = os.getenv("ORCHESTRATOR_URL", "http://localhost:8000")
+
+# Where each sub-agent is published on this machine, from the compose file.
+# The orchestrator reaches them by service name on the compose network, which
+# does not resolve from here - so checking them needs the published port, and
+# an agent without one simply is not checked.
+SUB_AGENT_PORTS = {"catalog": 8001, "circulation": 8002}
 QUESTIONS = Path(__file__).resolve().parent.parent / "tests" / "eval" / "questions.json"
 
 ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
@@ -75,21 +81,102 @@ async def expected_values(questions: list[dict]) -> dict:
         await connection.close()
 
 
-def running_model() -> str:
-    """What the orchestrator is actually running, asked rather than assumed.
+def get_json(url: str, timeout: int = 10):
+    with urllib.request.urlopen(url, timeout=timeout) as response:
+        return json.loads(response.read().decode())
 
-    Comparing two models means restarting the containers with QWEN_MODEL
-    changed, and a container that did not restart answers happily with the old
-    one - which attributes a result to the wrong model, quietly, in the
-    direction that makes the newer model look identical to the older.
+
+def preflight() -> str:
+    """Refuse to score anything until the system is actually answering.
+
+    This exists because the first real run of this script reported 0/18 with
+    every answer "wrong (said [404, 500])" - which is not a model getting
+    questions wrong, it is HTTP status codes being read as numbers in an
+    answer. The orchestrator was returning 500 because a sub-agent was
+    returning 404, and the harness dutifully scored six questions against a
+    system that was not running.
+
+    A measurement tool that reports a broken deployment as a bad model is
+    worse than no measurement tool, so this runs first and stops.
+
+    Returns the model name on success.
     """
+    base = ORCHESTRATOR.rstrip("/")
+
     try:
-        with urllib.request.urlopen(f"{ORCHESTRATOR.rstrip('/')}/health", timeout=10) as r:
-            health = json.loads(r.read().decode())
-        model = health.get("model") or "unknown"
-        return f"{model} (thinking)" if health.get("thinking") else model
-    except Exception:
-        return "unknown"
+        health = get_json(f"{base}/health")
+    except Exception as e:
+        sys.exit(
+            f"The orchestrator at {base} is not answering /health: {e}\n\n"
+            "  docker compose -f deploy/docker-compose.yml up -d --build\n"
+            "  curl localhost:8000/health\n"
+        )
+
+    if health.get("kind") != "orchestrator":
+        sys.exit(
+            f"{base} is serving the {health.get('agent')!r} agent, not the "
+            "orchestrator, so it has no /ask. AGENT_KEY is set on the wrong "
+            "container.\n"
+        )
+
+    if "model" not in health:
+        # /health has reported the model since the commit that added this
+        # check, so its absence means the container is running an older image.
+        # --force-recreate recreates a container from the image it already
+        # has; only --build makes a new one.
+        sys.exit(
+            "The orchestrator is running an older image than this checkout - "
+            "its /health does not report a model.\n\n"
+            "  docker compose -f deploy/docker-compose.yml up -d --build\n\n"
+            "--force-recreate alone recreates the container from the image it "
+            "already has; --build is what rebuilds it.\n"
+        )
+
+    # Every agent it routes to, before asking it six questions that delegate.
+    # A sub-agent that is down turns into a 500 at the orchestrator, and the
+    # message that comes back names neither the agent nor the reason.
+    unreachable = check_sub_agents(health.get("routes_to", []))
+    if unreachable:
+        sys.exit(
+            "The orchestrator is up but cannot reach: "
+            + ", ".join(unreachable) + "\n\n"
+            "Every question here delegates, so all of them would fail. The "
+            "orchestrator turns this into a 500 whose message names neither "
+            "the agent nor the reason.\n\n"
+            "  docker compose -f deploy/docker-compose.yml ps\n"
+            "  docker compose -f deploy/docker-compose.yml logs agent-catalog\n"
+        )
+
+    checked = [n for n in health.get("routes_to", []) if n in SUB_AGENT_PORTS]
+    print(f"orchestrator ok, agents reachable: {', '.join(checked) or 'none published'}")
+
+    model = health.get("model") or "unset"
+    return f"{model} (thinking)" if health.get("thinking") else model
+
+
+def check_sub_agents(names: list[str]) -> list[str]:
+    """Which registered agents are not answering their own /health.
+
+    Ports come from the compose file - the orchestrator reaches them by
+    service name on the compose network, which does not resolve from here.
+    An agent whose port is not published cannot be checked and is not
+    reported as broken.
+    """
+    unreachable = []
+    for index, name in enumerate(names):
+        port = SUB_AGENT_PORTS.get(name)
+        if port is None:
+            continue
+        try:
+            health = get_json(f"http://localhost:{port}/health", timeout=5)
+        except Exception as e:
+            unreachable.append(f"{name} (localhost:{port}: {e})")
+            continue
+        if health.get("kind") != "sub_agent":
+            unreachable.append(
+                f"{name} (localhost:{port} is a {health.get('kind')}, not a "
+                "sub_agent - AGENT_KEY is unset on that container)")
+    return unreachable
 
 
 def ask(question: str, session: str) -> tuple[str, list, float]:
@@ -103,7 +190,12 @@ def ask(question: str, session: str) -> tuple[str, list, float]:
         with urllib.request.urlopen(request, timeout=300) as response:
             body = json.loads(response.read())
     except urllib.error.HTTPError as e:
-        return f"[HTTP {e.code}] {e.read().decode()[:120]}", [], time.time() - started
+        # None as the answer, not a string. A string went through numbers_in()
+        # and "[HTTP 500] ... 404 ..." scored as the model answering 404 - so
+        # six questions were reported wrong against a system that never
+        # answered any of them. An error is a third outcome, not a wrong one.
+        return None, [{"error": f"HTTP {e.code}: {e.read().decode()[:200]}"}], \
+            time.time() - started
     except urllib.error.URLError as e:
         sys.exit(f"Cannot reach the orchestrator at {ORCHESTRATOR}: {e}")
 
@@ -132,13 +224,14 @@ def main() -> None:
     except Exception as e:
         sys.exit(f"Cannot read the expected answers from Postgres: {e}")
 
-    model = running_model()
+    model = preflight()
     print(f"{len(catalogue)} question(s), {args.runs} attempt(s) each, "
           f"against {ORCHESTRATOR}")
     print(f"model: {model}"
           + (f"   [{args.label}]" if args.label else "") + "\n")
 
     totals = [0, 0]
+    errors = 0
     for question in catalogue:
         right = truth[question["id"]]["right"]
         wrong = truth[question["id"]]["wrong"]
@@ -155,6 +248,16 @@ def main() -> None:
             answer, delegated, elapsed = ask(
                 question["ask"], f"eval-{question['id']}-{attempt}-{int(time.time())}"
             )
+
+            if answer is None:
+                # Counted apart from correct and wrong. A run with errors in it
+                # has not measured the model at all, and averaging them into a
+                # score would hide that.
+                errors += 1
+                print(f"     {attempt + 1}. {'  ERROR':<10}{elapsed:>6.1f}s  "
+                      f"{delegated[0]['error']}")
+                continue
+
             found = numbers_in(answer)
 
             if right in found:
@@ -181,6 +284,16 @@ def main() -> None:
     print("─" * 60)
     print(f"{score}/{out_of} correct   model: {model}"
           + (f"   [{args.label}]" if args.label else ""))
+
+    if errors:
+        print(
+            f"\n{errors} of those {out_of} attempts errored rather than "
+            "answering, so this score does not measure the model.\n"
+            "The orchestrator was reachable when this started, so something "
+            "failed mid-run - read what:\n\n"
+            "    docker compose -f deploy/docker-compose.yml logs --tail=100\n"
+        )
+        return
     if score < out_of:
         print(
             "\nA question that is sometimes right and sometimes wrong is not a\n"
