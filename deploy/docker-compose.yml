@@ -38,6 +38,7 @@ x-agent-base: &agent-base
     # and is substantially cheaper for the same models.
     QWEN_API_URL: ${QWEN_API_URL:-https://dashscope-intl.aliyuncs.com/compatible-mode/v1}
     QWEN_MODEL: ${QWEN_MODEL:-qwen3-14b}
+    QWEN_MAX_TOKENS: ${QWEN_MAX_TOKENS:-8192}
     # Unset means "infer from the model name" (qwen3-* gets false).
     QWEN_ENABLE_THINKING: ${QWEN_ENABLE_THINKING:-}
     QWEN_EMBED_MODEL: ${QWEN_EMBED_MODEL:-text-embedding-v3}

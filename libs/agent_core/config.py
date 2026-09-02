@@ -30,7 +30,8 @@ QWEN_API_KEY = os.getenv("QWEN_API_KEY", "")
 QWEN_API_URL = os.getenv("QWEN_API_URL", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
 QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen3-14b")
 QWEN_TEMPERATURE = float(os.getenv("QWEN_TEMPERATURE", "0.1"))
-QWEN_MAX_TOKENS = int(os.getenv("QWEN_MAX_TOKENS", "32000"))
+# Completion length, not context. DashScope caps qwen3-* at 8192.
+QWEN_MAX_TOKENS = int(os.getenv("QWEN_MAX_TOKENS", "8192"))
 # Qwen3 hybrid-thinking models (qwen3-*) reject non-streaming calls unless
 # enable_thinking is explicitly false, while strict OpenAI-compatible
 # endpoints reject the parameter altogether. Unset means: infer from the
