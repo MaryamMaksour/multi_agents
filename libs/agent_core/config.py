@@ -28,9 +28,46 @@ import os
 # not a code change - the adapter is the same either way.
 QWEN_API_KEY = os.getenv("QWEN_API_KEY", "")
 QWEN_API_URL = os.getenv("QWEN_API_URL", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
-QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen3-14b")
+# The default was qwen3-14b, and on the account this runs against every
+# qwen3-* model answered "403 Unpurchased" - so the default was a model that
+# could not be called at all, and the first question of every fresh checkout
+# failed on it. qwen-plus is the one verified to work there, with tool
+# calling.
+#
+# Stronger, in order, all on the same endpoint and all a one-variable change:
+#
+#     qwen-plus     the default here. Fast, cheap, tool calling.
+#     qwen-max      more capable on exactly the failure this system has -
+#                   holding every constraint in a question at once, which is
+#                   where "how many Arabic novels under 300 pages" loses its
+#                   genre.
+#     qwen3-max     the largest. Slowest and dearest per question.
+#
+# scripts/check_model.py --compare tries the ones an account can reach and
+# reports which answered correctly, so the choice is measured rather than
+# argued.
+QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen-plus")
+
+# 0.1 rather than 0: not zero, because some providers treat 0 as "unset" and
+# substitute their own default, which is usually 0.7. Low enough that the same
+# question takes the same route through the tools most of the time - which is
+# what makes a wrong answer worth investigating rather than shrugging at.
 QWEN_TEMPERATURE = float(os.getenv("QWEN_TEMPERATURE", "0.1"))
 QWEN_MAX_TOKENS = int(os.getenv("QWEN_MAX_TOKENS", "32000"))
+
+# Whether to ask the model to think before answering, where it can.
+#
+# Qwen3 models return a chain of thought in `reasoning_content` beside the
+# answer, and it is the field that says outright why a wrong answer was wrong
+# where the tool arguments only imply it. It is recorded on ChatMessage,
+# stored in history and rendered by scripts/show_history.py as THINKS.
+#
+# Off by default, and deliberately. DashScope requires stream=True when
+# thinking is on, so switching it on changes the request path; it costs
+# reasoning tokens on every call; and not every model accepts the parameter.
+# A model that returns reasoning without being asked - which several do - is
+# captured either way, with none of that.
+QWEN_ENABLE_THINKING = os.getenv("QWEN_ENABLE_THINKING", "false").lower() == "true"
 
 QWEN_EMBED_MODEL = os.getenv("QWEN_EMBED_MODEL", "text-embedding-v3")
 

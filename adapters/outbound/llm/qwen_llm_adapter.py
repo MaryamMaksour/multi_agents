@@ -1,5 +1,6 @@
 import json
 import logging
+from types import SimpleNamespace
 from typing import Any
 
 from openai import AsyncOpenAI
@@ -9,6 +10,46 @@ from domain.exceptions import LLMRequestError
 from libs.agent_core.logging_setup import Timer, log_event
 
 logger = logging.getLogger(__name__)
+
+
+class _Assembled(SimpleNamespace):
+    """A streamed response wearing the shape of a non-streamed one.
+
+    SimpleNamespace rather than a dataclass because everything downstream
+    reads these with getattr and never constructs one: _from_provider_response
+    and _usage_fields were written against the provider's objects, and the
+    point of reassembling here is that they do not have to learn a second
+    shape.
+    """
+
+
+def _assembled(content, reasoning, calls, finish, usage) -> Any:
+    tool_calls = [
+        SimpleNamespace(
+            id=slot["id"] or f"call_{index}",
+            type="function",
+            function=SimpleNamespace(
+                name=slot["name"] or "",
+                # Joined at the end: each fragment is a few characters, so any
+                # single one is invalid JSON on its own.
+                arguments="".join(slot["arguments"]),
+            ),
+        )
+        for index, slot in sorted(calls.items())
+    ]
+
+    message = _Assembled(
+        role="assistant",
+        content="".join(content) or None,
+        # None rather than "" when the model returned no reasoning, so the
+        # trace renderer shows the section only when there is something in it.
+        reasoning_content="".join(reasoning) or None,
+        tool_calls=tool_calls or None,
+    )
+    return _Assembled(
+        choices=[_Assembled(message=message, finish_reason=finish)],
+        usage=usage,
+    )
 
 
 def _usage_fields(response: Any) -> dict:
@@ -44,12 +85,16 @@ def _usage_fields(response: Any) -> dict:
 
 class QwenLLMAdapter:
     def __init__(self, client: AsyncOpenAI, model: str, temperature: float, max_tokens: int,
-                 tools: list[dict] | None = None):
+                 tools: list[dict] | None = None, enable_thinking: bool = False):
         self._client = client
         self._model = model
         self._temperature = temperature
         self._max_tokens = max_tokens
-        self._tools = tools  # bound 
+        self._tools = tools  # bound
+        # Thinking mode changes the request path, not just a parameter:
+        # DashScope refuses enable_thinking on a non-streaming call, so this
+        # decides between two code paths below.
+        self._enable_thinking = enable_thinking
 
     @staticmethod
     def _to_provider_message(msg: ChatMessage) -> dict:
@@ -120,6 +165,76 @@ class QwenLLMAdapter:
         return ChatMessage(role=Role.ASSISTANT, content=message.content,
                            tool_calls=tool_calls, reasoning=reasoning)
 
+    async def _thinking_call(self, provider_messages: list[dict]) -> Any:
+        """Ask the model to think first, and reassemble the stream into one
+        response the rest of this adapter can treat like any other.
+
+        DashScope refuses `enable_thinking` on a non-streaming request, so
+        thinking mode has to stream - which means the pieces arrive as deltas
+        and something has to put them back together. That something is here
+        rather than in the loop, so the loop never learns that two kinds of
+        model call exist.
+
+        Tool calls are the fiddly part. They arrive across many chunks: the
+        first carries the id and the function name, and the arguments come a
+        few characters at a time, so the JSON is only valid once the last
+        chunk has landed. `index` is what says which call a fragment belongs
+        to - not the id, which most chunks omit - and a model emitting two
+        calls interleaves their fragments.
+        """
+        stream = await self._client.chat.completions.create(
+            model=self._model,
+            messages=provider_messages,
+            tools=self._tools,
+            temperature=self._temperature,
+            max_tokens=self._max_tokens,
+            stream=True,
+            # Where the provider's own extras go. Unknown to the OpenAI
+            # schema, passed through as-is - which is also why a provider
+            # that does not know it may reject the call, and why this is off
+            # by default.
+            extra_body={"enable_thinking": True},
+            stream_options={"include_usage": True},
+        )
+
+        content, reasoning, finish, usage = [], [], None, None
+        calls: dict[int, dict] = {}
+
+        async for chunk in stream:
+            # The usage chunk carries no choices, so this has to come first or
+            # chunk.choices[0] raises on the last chunk of every call.
+            if getattr(chunk, "usage", None):
+                usage = chunk.usage
+            if not getattr(chunk, "choices", None):
+                continue
+
+            choice = chunk.choices[0]
+            finish = getattr(choice, "finish_reason", None) or finish
+            delta = getattr(choice, "delta", None)
+            if delta is None:
+                continue
+
+            if getattr(delta, "content", None):
+                content.append(delta.content)
+            if getattr(delta, "reasoning_content", None):
+                reasoning.append(delta.reasoning_content)
+
+            for fragment in getattr(delta, "tool_calls", None) or []:
+                slot = calls.setdefault(
+                    getattr(fragment, "index", 0),
+                    {"id": None, "name": None, "arguments": []},
+                )
+                if getattr(fragment, "id", None):
+                    slot["id"] = fragment.id
+                function = getattr(fragment, "function", None)
+                if function is not None:
+                    if getattr(function, "name", None):
+                        slot["name"] = function.name
+                    if getattr(function, "arguments", None):
+                        slot["arguments"].append(function.arguments)
+
+        return _assembled(content, reasoning, calls, finish, usage)
+
     async def achat(self, messages: list[ChatMessage]) -> ChatMessage:
         """Send the full conversation history to the LLM and return its reply.
 
@@ -135,13 +250,16 @@ class QwenLLMAdapter:
 
         try:
             with Timer() as timer:
-                response = await self._client.chat.completions.create(
-                    model=self._model,
-                    messages=provider_messages,
-                    tools=self._tools,
-                    temperature=self._temperature,
-                    max_tokens=self._max_tokens,
-                )
+                if self._enable_thinking:
+                    response = await self._thinking_call(provider_messages)
+                else:
+                    response = await self._client.chat.completions.create(
+                        model=self._model,
+                        messages=provider_messages,
+                        tools=self._tools,
+                        temperature=self._temperature,
+                        max_tokens=self._max_tokens,
+                    )
         except Exception as e:
             # Two records on purpose. The event line is what a log search
             # finds and counts; the exc_info line carries the frame, and the

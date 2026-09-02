@@ -75,6 +75,23 @@ async def expected_values(questions: list[dict]) -> dict:
         await connection.close()
 
 
+def running_model() -> str:
+    """What the orchestrator is actually running, asked rather than assumed.
+
+    Comparing two models means restarting the containers with QWEN_MODEL
+    changed, and a container that did not restart answers happily with the old
+    one - which attributes a result to the wrong model, quietly, in the
+    direction that makes the newer model look identical to the older.
+    """
+    try:
+        with urllib.request.urlopen(f"{ORCHESTRATOR.rstrip('/')}/health", timeout=10) as r:
+            health = json.loads(r.read().decode())
+        model = health.get("model") or "unknown"
+        return f"{model} (thinking)" if health.get("thinking") else model
+    except Exception:
+        return "unknown"
+
+
 def ask(question: str, session: str) -> tuple[str, list, float]:
     payload = json.dumps({"question": question, "session_id": session}).encode()
     request = urllib.request.Request(
@@ -100,6 +117,8 @@ def main() -> None:
     parser.add_argument("--only", help="run one question by id")
     parser.add_argument("--show-delegated", action="store_true",
                         help="print what the orchestrator asked each agent")
+    parser.add_argument("--label", help="a note to print with the score, for "
+                                        "keeping two runs apart")
     args = parser.parse_args()
 
     catalogue = json.loads(QUESTIONS.read_text(encoding="utf-8"))["questions"]
@@ -113,8 +132,11 @@ def main() -> None:
     except Exception as e:
         sys.exit(f"Cannot read the expected answers from Postgres: {e}")
 
+    model = running_model()
     print(f"{len(catalogue)} question(s), {args.runs} attempt(s) each, "
-          f"against {ORCHESTRATOR}\n")
+          f"against {ORCHESTRATOR}")
+    print(f"model: {model}"
+          + (f"   [{args.label}]" if args.label else "") + "\n")
 
     totals = [0, 0]
     for question in catalogue:
@@ -157,13 +179,21 @@ def main() -> None:
 
     score, out_of = totals
     print("─" * 60)
-    print(f"{score}/{out_of} correct")
+    print(f"{score}/{out_of} correct   model: {model}"
+          + (f"   [{args.label}]" if args.label else ""))
     if score < out_of:
         print(
             "\nA question that is sometimes right and sometimes wrong is not a\n"
             "prompt that needs rewording - it is the same prompt producing\n"
-            "different SQL. Lower QWEN_TEMPERATURE, or use a stronger model for\n"
-            "the agent that got it wrong, and run this again."
+            "different SQL.\n\n"
+            "To compare a stronger model, change one variable and run this again:\n\n"
+            "    QWEN_MODEL=qwen-max docker compose -f deploy/docker-compose.yml \\\n"
+            "        up -d --force-recreate\n"
+            "    python3 scripts/evaluate.py --runs 3 --label qwen-max\n\n"
+            "The model printed above comes from /health, so a container that did\n"
+            "not restart is visible rather than scored as the new model.\n\n"
+            "For a wrong answer, read the trace rather than guessing:\n\n"
+            "    python3 scripts/show_history.py --agent orchestrator --turns 3\n"
         )
 
 

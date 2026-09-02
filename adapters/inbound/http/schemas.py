@@ -117,10 +117,17 @@ class HealthResponse(BaseModel):
     whole design is built to prevent, so the health endpoint reports the
     tables it actually resolved. That makes a misconfiguration visible from
     outside the process, without a query and without logs.
+
+    `model` is here for the same reason and a smaller one: comparing two
+    models means restarting the containers with QWEN_MODEL changed, and a
+    stale container answering with the old one is a silent way to attribute a
+    result to the wrong model. Asking is one curl.
     """
 
     status: str
     kind: str
     agent: Optional[str] = None
+    model: str = ""
+    thinking: bool = False
     tables: list[str] = Field(default_factory=list)
     routes_to: list[str] = Field(default_factory=list)

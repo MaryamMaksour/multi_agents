@@ -250,6 +250,8 @@ def create_app(open_runtime_fn=open_runtime) -> FastAPI:
             status="ok",
             kind=runtime.kind,
             agent=runtime.agent.spec.name if runtime.agent else None,
+            model=config.QWEN_MODEL,
+            thinking=config.QWEN_ENABLE_THINKING,
             tables=list(runtime.agent.allowed_tables) if runtime.agent else [],
             routes_to=list(runtime.routes_to),
         )
