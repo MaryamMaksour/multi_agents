@@ -41,6 +41,7 @@ from libs.agent_core.logging_setup import (
     bind,
     configure_logging,
     context,
+    current_context,
     log_event,
     new_request_id,
     unbind,
@@ -210,6 +211,20 @@ def create_app(open_runtime_fn=open_runtime) -> FastAPI:
         # Logged at ERROR because a DomainError reaching the edge means a turn
         # was lost, whatever the caller does with the 500.
         logger.error("domain error answering the request", exc_info=exc)
+
+        # ...unless the deployment says otherwise. A DatabaseError carries the
+        # SQL that failed, which describes the schema; that is fine when the
+        # callers own the database and not fine when they do not. The log has
+        # the full message either way, so switching this off costs nothing but
+        # a longer walk to the diagnosis.
+        if not config.HTTP_ERROR_DETAIL:
+            raise HTTPException(
+                status_code=500,
+                detail="The request could not be completed. The reason is in "
+                       "the service log, under this request id.",
+                headers={"x-request-id": current_context().get("request_id", "")},
+            )
+
         raise HTTPException(
             status_code=500, detail=f"{type(exc).__name__}: {exc}"
         )

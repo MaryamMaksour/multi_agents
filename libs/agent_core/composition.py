@@ -41,6 +41,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from adapters.outbound.agent_loop.langgraph_agent_loop_adapter import (
+    DEFAULT_MAX_ITERATIONS,
     LangGraphAgentLoopAdapter,
 )
 from adapters.outbound.db.postgres_db_adapter import PostgresDatabaseAdapter
@@ -81,6 +82,7 @@ def assemble_sub_agent(
     dist_op: str = "<=>",
     vector_ttl_seconds: int = 900,
     max_pages_per_tool: int = 5,
+    max_iterations: int = DEFAULT_MAX_ITERATIONS,
     max_session_messages: int = 40,
     context_messages_sent: int = 20,
     session_ttl_seconds: int = 60 * 60 * 24 * 3,
@@ -114,6 +116,7 @@ def assemble_sub_agent(
         llm=llm_factory(tools.get_tool_schemas()),
         tools=tools,
         max_pages_per_tool=max_pages_per_tool,
+        max_iterations=max_iterations,
     )
     return RunAgentTurn(
         agent_loop=loop,
@@ -160,6 +163,7 @@ def assemble_orchestrator(
     url_template: str = config.AGENT_URL_TEMPLATE,
     timeout: int = 60,
     max_pages_per_tool: int = 5,
+    max_iterations: int = DEFAULT_MAX_ITERATIONS,
     max_session_messages: int = 40,
     context_messages_sent: int = 20,
     session_ttl_seconds: int = 60 * 60 * 24 * 3,
@@ -193,6 +197,7 @@ def assemble_orchestrator(
         llm=llm_factory(tools.get_tool_schemas()),
         tools=tools,
         max_pages_per_tool=max_pages_per_tool,
+        max_iterations=max_iterations,
     )
     return RunAgentTurn(
         agent_loop=loop,
@@ -419,6 +424,7 @@ async def open_runtime(agent_key: str | None = None) -> Runtime:
                     dist_op=config.DIST_OP,
                     vector_ttl_seconds=config.VECTOR_TTL_SECONDS,
                     max_pages_per_tool=config.MAX_PAGES_PER_TOOL,
+                    max_iterations=config.MAX_LOOP_ITERATIONS,
                     max_session_messages=config.MAX_SESSION_MESSAGES,
                     context_messages_sent=config.CONTEXT_MESSAGES_SENT,
                     session_ttl_seconds=config.SESSION_TTL_SECONDS,
@@ -443,6 +449,7 @@ async def open_runtime(agent_key: str | None = None) -> Runtime:
             llm_factory=llm_factory, url_template=config.AGENT_URL_TEMPLATE,
             timeout=config.TOOLS_HTTP_TIMEOUT_SECS,
             max_pages_per_tool=config.MAX_PAGES_PER_TOOL,
+            max_iterations=config.MAX_LOOP_ITERATIONS,
             max_session_messages=config.MAX_SESSION_MESSAGES,
             context_messages_sent=config.CONTEXT_MESSAGES_SENT,
             session_ttl_seconds=config.SESSION_TTL_SECONDS,

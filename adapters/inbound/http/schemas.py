@@ -16,6 +16,29 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
+# Upper bounds on everything a caller controls.
+#
+# The endpoint had a floor and no ceiling, and the two are not symmetric. An
+# empty question is a mistake; a four-megabyte one is a bill. It is embedded,
+# sent to the model as the last message of a prompt that already carries the
+# tool schemas, stored in the conversation window, and written to history -
+# so one request costs an embedding call, a model call priced per token, and
+# a row that stays for the retention window. Nothing above these limits is a
+# real question, and everything above them is someone finding that out.
+#
+# Generous rather than tight: 8000 characters is several pages of Arabic, far
+# more than any question, and small enough that no accident is expensive.
+MAX_QUESTION_CHARS = 8_000
+
+# A session id is a correlation value that becomes a Redis key and a history
+# column. It never needs to be long, and an unbounded one is an unbounded key.
+MAX_SESSION_ID_CHARS = 200
+
+# A cursor is issued by this system - compressed, base64 - and handed back
+# unchanged. The cap is on what a caller may return, not on what is produced;
+# a longer one was never issued here.
+MAX_CURSOR_CHARS = 8_000
+
 
 class DelegateContext(BaseModel):
     """The correlation values the caller carries, not the model's choices.
@@ -26,8 +49,8 @@ class DelegateContext(BaseModel):
     trace readable after the fact.
     """
 
-    cursor: Optional[str] = None
-    turn_id: Optional[str] = None
+    cursor: Optional[str] = Field(default=None, max_length=MAX_CURSOR_CHARS)
+    turn_id: Optional[str] = Field(default=None, max_length=MAX_SESSION_ID_CHARS)
 
 
 class RunRequest(BaseModel):
@@ -36,16 +59,16 @@ class RunRequest(BaseModel):
     Mirrors HttpDelegateToolAdapter.call_tool exactly.
     """
 
-    session_id: str = ""
-    user_input: str = Field(min_length=1)
+    session_id: str = Field(default="", max_length=MAX_SESSION_ID_CHARS)
+    user_input: str = Field(min_length=1, max_length=MAX_QUESTION_CHARS)
     context: DelegateContext = Field(default_factory=DelegateContext)
 
 
 class AskRequest(BaseModel):
     """What a person (or the console) posts to the orchestrator."""
 
-    question: str = Field(min_length=1)
-    session_id: str = Field(min_length=1)
+    question: str = Field(min_length=1, max_length=MAX_QUESTION_CHARS)
+    session_id: str = Field(min_length=1, max_length=MAX_SESSION_ID_CHARS)
 
 
 class DelegatedQuestion(BaseModel):

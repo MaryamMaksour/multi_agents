@@ -45,6 +45,12 @@ x-agent-base: &agent-base
     EMBED_API_URL: ${EMBED_API_URL:-}
     EMBED_API_KEY: ${EMBED_API_KEY:-}
     DIST_OP: ${DIST_OP:-<=>}
+    # LOG_FORMAT=json for anything that ships logs somewhere that parses
+    # them; text is for reading with `docker compose logs`.
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    LOG_FORMAT: ${LOG_FORMAT:-text}
+    HTTP_ERROR_DETAIL: ${HTTP_ERROR_DETAIL:-true}
+    MAX_LOOP_ITERATIONS: ${MAX_LOOP_ITERATIONS:-12}
   depends_on:
     postgres:
       condition: service_healthy
@@ -91,7 +97,14 @@ services:
       <<: *agent-env
       AGENT_KEY: catalog
     ports:
-      - "8001:8000"
+      # Bound to the loopback interface, unlike the orchestrator's 8000.
+      # A sub-agent answers /run with no authentication - it trusts its
+      # caller, because its caller is the orchestrator on the compose
+      # network - so publishing it on every interface put the whole
+      # delegation layer on the network for anyone who could reach the host.
+      # Still reachable for `curl localhost:8001/health`, which is what the
+      # published port was for.
+      - "127.0.0.1:8001:8000"
 
   agent-circulation:
     <<: *agent-base
@@ -100,7 +113,7 @@ services:
       <<: *agent-env
       AGENT_KEY: circulation
     ports:
-      - "8002:8000"
+      - "127.0.0.1:8002:8000"
 
   # No AGENT_KEY, so this is the orchestrator. It holds one delegate tool per
   # registered sub-agent and no database access of its own beyond history.

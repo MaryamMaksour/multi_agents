@@ -347,3 +347,66 @@ async def test_the_page_budget_stops_a_runaway_loop():
         if m.role is Role.TOOL and "Pagination limit" in str(m.content)
     ]
     assert refusals, "the model should be told why it stopped getting pages"
+
+
+# --------------------------------------------------------------------------
+# the iteration budget
+# --------------------------------------------------------------------------
+
+class NeverStops:
+    """A model that keeps calling tools and never answers.
+
+    Not a contrived case. It happens on a schema the model cannot make sense
+    of, and after a tool error it keeps retrying the same way - and every one
+    of those calls is paid for.
+    """
+
+    def __init__(self):
+        self.calls = 0
+
+    async def achat(self, messages):
+        self.calls += 1
+        return ChatMessage(
+            role=Role.ASSISTANT, content="",
+            tool_calls=[ToolCall(id=f"c{self.calls}", name="db_execute", args={})],
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_model_that_never_stops_is_stopped():
+    """There was no budget. The loop ran until LangGraph's own recursion limit
+    raised GraphRecursionError - a library exception with nothing in it about
+    agents, tools or the question - after paying for every call."""
+    llm = NeverStops()
+    loop = adapter(llm=llm, tools=FakeTools(), max_iterations=4)
+
+    await loop.run([ChatMessage(role=Role.USER, content="q")])
+
+    assert llm.calls == 4
+
+
+@pytest.mark.asyncio
+async def test_the_turn_still_ends_with_something_readable():
+    """An empty answer tells the caller nothing at all, and a 500 tells them
+    less. Saying what happened is worth more than either."""
+    result = await adapter(llm=NeverStops(), tools=FakeTools(),
+                           max_iterations=3).run(
+        [ChatMessage(role=Role.USER, content="q")])
+
+    last = result.messages[-1]
+    assert last.role is Role.ASSISTANT
+    assert "3 steps" in last.content
+
+
+@pytest.mark.asyncio
+async def test_a_normal_turn_is_untouched_by_the_budget():
+    """The budget must not truncate a question that was converging."""
+    llm = FakeLLM([
+        ChatMessage(role=Role.ASSISTANT, content="",
+                    tool_calls=[ToolCall(id="c1", name="db_execute", args={})]),
+        ChatMessage(role=Role.ASSISTANT, content="There are 12."),
+    ])
+    result = await adapter(llm=llm, tools=FakeTools()).run(
+        [ChatMessage(role=Role.USER, content="q")])
+
+    assert result.messages[-1].content == "There are 12."

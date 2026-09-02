@@ -116,6 +116,29 @@ VECTOR_TTL_SECONDS = int(os.getenv("VECTOR_TTL_SECONDS", "900"))
 
 TOOLS_HTTP_TIMEOUT_SECS = int(os.getenv("TOOLS_HTTP_TIMEOUT_SECS", "60"))
 
+# --- what a failure tells the caller -------------------------------------
+# Whether a 500 body names the exception, or only says something failed.
+#
+# On by default, and that is a considered choice rather than an oversight.
+# The alternative sends whoever is debugging to `docker compose logs` for
+# every failure - and on a machine where the containers are not theirs,
+# nowhere at all. In practice the type and message have been the whole
+# diagnosis: "CacheError: Extra data: line 1 column 9" named a bug exactly.
+#
+# It does leak. A DatabaseError carries the SQL that failed, which describes
+# the schema, and the SQL was written from somebody's question. That is
+# acceptable when the callers are the people who own the database and not
+# acceptable when they are not, so it is a variable rather than a constant.
+# Set HTTP_ERROR_DETAIL=false for any deployment reachable by someone who
+# should not be reading the schema; the log keeps the full message either way.
+HTTP_ERROR_DETAIL = os.getenv("HTTP_ERROR_DETAIL", "true").lower() != "false"
+
+# How many model calls one question may take. Twelve is about seven for a
+# real question - schema, filters, values, execute, answer - with room for a
+# correction or two. Past that the loop is not converging and stopping costs
+# less than continuing.
+MAX_LOOP_ITERATIONS = int(os.getenv("MAX_LOOP_ITERATIONS", "12"))
+
 
 _REQUIRED = ("PG_DBNAME", "PG_USER", "PG_PASSWORD", "PG_HOST", "QWEN_API_KEY")
 
