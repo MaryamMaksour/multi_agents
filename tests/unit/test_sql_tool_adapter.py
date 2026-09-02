@@ -411,3 +411,64 @@ async def test_table_records_refuse_a_disallowed_table():
     )
     assert "error" in result
     assert db.queries == []
+
+
+# --------------------------------------------------------------------------
+# has_more, and the aggregate that pretended to have more pages
+# --------------------------------------------------------------------------
+
+
+async def test_an_aggregate_query_does_not_report_more_pages():
+    """The most common question this system gets asked, answered wrongly.
+
+    "How many English novels are under 400 pages?" becomes
+
+        SELECT count(*) AS n FROM books WHERE ... LIMIT $1 OFFSET $2
+
+    with a count_query that returns the same 12. One row comes back, total is
+    12, and `next_offset < total` made has_more true - so the model was told
+    there were eleven more pages of a result that has exactly one row. It is
+    in the recorded traces: every counting question ends with has_more true.
+
+    A page shorter than its limit is the end, whatever the count says.
+    """
+    db = FakeDatabase([[{"n": 12}], [{"count": 12}]])
+    result = await adapter(db=db).call_tool("db_execute", paged(
+        query="SELECT count(*) AS n FROM books WHERE language=$1 LIMIT $2 OFFSET $3",
+        params=("English", 10, 0),
+    ))
+
+    assert result["has_more"] is False
+    assert result["next_cursor"] == ""
+
+
+async def test_a_full_page_still_reports_more():
+    """The fix must not switch pagination off: a page that fills its limit,
+    with a total beyond it, still has more."""
+    db = FakeDatabase([[{"id": i} for i in range(10)], [{"count": 42}]])
+    result = await adapter(db=db).call_tool("db_execute", paged())
+
+    assert result["has_more"] is True
+    assert result["next_cursor"]
+
+
+async def test_a_short_page_ends_the_walk_even_when_the_count_disagrees():
+    """A count_query whose WHERE has drifted from the query's reports a total
+    that was never reachable, and the model would page towards it forever -
+    up to the page budget, paying for each one. The page length is the fact
+    that is actually true."""
+    db = FakeDatabase([[{"id": 1}, {"id": 2}], [{"count": 500}]])
+    result = await adapter(db=db).call_tool("db_execute", paged())
+
+    assert result["has_more"] is False
+
+
+async def test_a_non_numeric_limit_is_rejected_rather_than_raised():
+    """int() on a value the model chose. A string that is not a number took
+    the turn down with a ValueError from inside the adapter, where an error
+    result would have let the model correct its own call."""
+    db = FakeDatabase([[], [{"count": 0}]])
+    result = await adapter(db=db).call_tool("db_execute", paged(params=("ten", 0)))
+
+    assert "error" in result
+    assert "limit" in result["error"]

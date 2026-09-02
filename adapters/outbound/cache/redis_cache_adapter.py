@@ -1,10 +1,14 @@
-from typing import Any 
+from typing import Any
 import json
+import logging
 
 import redis.asyncio as redis
 
 from domain.exceptions import CacheError
 from domain.entities.chat_message import ChatMessage, from_plain, to_plain
+from libs.agent_core.logging_setup import log_event
+
+logger = logging.getLogger(__name__)
 
 # Values and locks live in separate key namespaces, and they have to.
 #
@@ -65,16 +69,24 @@ class RedisCacheAdapter:
             # caller, and returning None makes every caller write the same
             # check before it can concatenate.
             if value is None:
+                log_event(logger, "cache.miss", level=logging.DEBUG, key=key)
                 return []
 
             stored = json.loads(value)
 
             if stored.get("kind") != MESSAGES:
+                log_event(logger, "cache.hit", level=logging.DEBUG,
+                          key=key, kind=VALUE)
                 return stored["data"]
 
-            return [from_plain(msg) for msg in stored["data"]]
+            messages = [from_plain(msg) for msg in stored["data"]]
+            log_event(logger, "cache.hit", level=logging.DEBUG,
+                      key=key, kind=MESSAGES, messages=len(messages))
+            return messages
 
         except Exception as e:
+           log_event(logger, "cache.error", level=logging.ERROR,
+                     operation="get", key=key, error=type(e).__name__)
            raise CacheError(f"error {e} while getting cache for key: {key}") from e
 
     async def set(self, key: str, value: Any, ttl: int) -> None:
@@ -130,14 +142,18 @@ class RedisCacheAdapter:
                 self._locks[key] = lock
                 return True
 
+            # Not an error - the caller turns it into a 409 - but the line
+            # that distinguishes "two people asked at once", which is normal,
+            # from "a lock is never released", which is not.
+            log_event(logger, "cache.lock_contended", level=logging.WARNING, key=key)
             return False
 
     
     async def release_lock(self, key: str) -> None:
-            """Release a previously acquired lock.
-    
-            Raises:
-                CacheError: if the cache call fails.
+            """Release a previously acquired lock. Never raises.
+
+            Deliberately the one method here that does not turn a failure into
+            a CacheError - see the comment below.
             """
             lock = self._locks.pop(key, None)
 
@@ -146,7 +162,17 @@ class RedisCacheAdapter:
             try:
                 await lock.release()
             except Exception as e:
-                 raise CacheError(f"error {e} while releasing lock for key: {key}") from e
+                # Logged, not raised, and that is a bug fix rather than a
+                # style choice. RunAgentTurn releases in a `finally`, so an
+                # exception here replaces whatever the turn was returning -
+                # including a correct answer. And the most likely cause is
+                # precisely a turn that took longer than the lock's timeout:
+                # the lock expired on its own, someone else may hold it now,
+                # and there is nothing left to release. Failing the answer
+                # over that is the worst available outcome.
+                log_event(logger, "cache.lock_release_failed",
+                          level=logging.WARNING, key=key, error=type(e).__name__,
+                          detail=str(e))
 
 
 

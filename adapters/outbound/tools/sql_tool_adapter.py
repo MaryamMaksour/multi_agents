@@ -6,14 +6,18 @@ from domain.ports.cache_port import CachePort
 from domain.exceptions import UnknownToolError, ToolExecutionError
 from libs.agent_core.pgvector import to_vector_literal
 from libs.agent_core.sql_validation import validate_identifier, validate_readonly_query
+from libs.agent_core.logging_setup import log_event
 
 
 from typing import Any
 import base64
 import json
+import logging
 import re
 import uuid
 import zlib
+
+logger = logging.getLogger(__name__)
 
 
 MAX_OFFSET = 5000
@@ -298,10 +302,23 @@ class SqlToolAdapter():
         handler = self._handlers.get(tool_name)
 
         if handler is None:
+            # A model inventing a tool is worth seeing: it usually means the
+            # schema description reads like something it is not.
+            log_event(logger, "tool.unknown", level=logging.WARNING,
+                      tool=tool_name, known=sorted(self._handlers))
             raise UnknownToolError(f"Unknown tool: {tool_name}")
 
         try:
             return await handler(**args)
+        except TypeError as e:
+            # Wrong or missing arguments, which is a mistake the model can fix
+            # if it is told - so the message names the parameters rather than
+            # quoting a Python signature error.
+            log_event(logger, "tool.bad_arguments", level=logging.WARNING,
+                      tool=tool_name, given=sorted(args), detail=str(e))
+            raise ToolExecutionError(
+                f"{tool_name}: wrong arguments ({e}). Given: {sorted(args)}."
+            ) from e
         except Exception as e:
             raise ToolExecutionError(f"Error {e} while executing tool: {tool_name}") from e
 
@@ -380,26 +397,49 @@ class SqlToolAdapter():
         else:
             offset = 0
 
+        # Every rejection below returns an error to the model rather than
+        # raising, which is right - the model reads it and rewrites the query.
+        # It also means a rejected query leaves no trace anywhere, so a run
+        # where the model spent four of its twelve steps being told its LIMIT
+        # was missing looks identical to a run where it thought for a while.
+        # _rejected logs and returns in one line so that cannot drift.
+        def _rejected(reason: str, **fields):
+            log_event(logger, "sql.rejected", level=logging.WARNING,
+                      reason=reason, sql=" ".join(query.split())[:400], **fields)
+            return {"error": reason}
+
         query_err = validate_readonly_query(query, self._allowed_tables)
         if query_err:
-            return {"error": query_err}
+            return _rejected(query_err, which="query")
         count_query_err = validate_readonly_query(count_query, self._allowed_tables)
         if count_query_err:
-            return {"error": count_query_err}
+            return _rejected(count_query_err, which="count_query")
 
         query_check = query.lower()
         if "limit $" not in query_check:
-            return {"error": "limit $n should be in the query, params = [..., limit, offset]"}
+            return _rejected("limit $n should be in the query, params = [..., limit, offset]")
         if "offset $" not in query_check:
-            return {"error": "offset $n should be in the query, params = [..., limit, offset]"}
+            return _rejected("offset $n should be in the query, params = [..., limit, offset]")
 
         if len(params) >= 2:
-            if int(params[-2]) > 100:
-                return {"error": "limit should be less than 100"}
-            if int(params[-1]) > MAX_OFFSET:
-                return {"error": f"offset should be less than {MAX_OFFSET}"}
+            # int() on a value the model chose: it sends "10" as often as 10,
+            # and a string that is not a number at all took the turn down with
+            # a ValueError from inside the adapter rather than telling the
+            # model what was wrong with its call.
+            try:
+                limit_value, offset_value = int(params[-2]), int(params[-1])
+            except (TypeError, ValueError):
+                return _rejected(
+                    "the last two params must be the limit and the offset, "
+                    f"as numbers. Got: {params[-2]!r}, {params[-1]!r}"
+                )
+            if limit_value > 100:
+                return _rejected("limit should be less than 100", limit=limit_value)
+            if offset_value > MAX_OFFSET:
+                return _rejected(f"offset should be less than {MAX_OFFSET}",
+                                 offset=offset_value)
         else:
-            return {"error": "params must include limit and offset as the last two values"}
+            return _rejected("params must include limit and offset as the last two values")
 
         resolved_params = []
         for p in params:
@@ -424,7 +464,21 @@ class SqlToolAdapter():
         total = total_rows[0][list(total_rows[0].keys())[0]] if total_rows else 0
 
         next_offset = offset + row_count
-        has_more = next_offset < total
+
+        # Two conditions, and the second one is a bug fix.
+        #
+        # `next_offset < total` alone is wrong whenever the query is itself an
+        # aggregate. "SELECT count(*) AS n FROM books WHERE ... LIMIT $1" and
+        # its count_query both return 12, so total is 12, the page holds one
+        # row, and has_more comes back true - inviting the model to page
+        # through eleven more rows that do not exist. It happens on the most
+        # common question this system gets asked.
+        #
+        # A short page means the end, whatever the count says. That rule holds
+        # for aggregates, for a count_query whose WHERE has drifted from the
+        # query's, and for a total that changed between the two statements.
+        page_limit = int(params[-2]) if len(params) >= 2 else row_count
+        has_more = row_count >= page_limit and next_offset < total
         next_cursor = ""
         if has_more:
             next_cursor = _encode_cursor({

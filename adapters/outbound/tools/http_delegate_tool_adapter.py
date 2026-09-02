@@ -1,8 +1,12 @@
+import logging
 from typing import Any
 
 import httpx
 
 from domain.exceptions import UnknownToolError, ToolExecutionError
+from libs.agent_core.logging_setup import Timer, current_context, log_event
+
+logger = logging.getLogger(__name__)
 
 
 class HttpDelegateToolAdapter:
@@ -98,9 +102,30 @@ class HttpDelegateToolAdapter:
             },
         }
 
+        # The question as delegated, which is the orchestrator's real output.
+        # An answer of 129 to a question about novels is either this line
+        # having dropped the word, or the sub-agent having ignored it - and
+        # nothing else in the system distinguishes those two.
+        log_event(logger, "delegate.ask", agent=tool_name, question=query)
+
         try:
-            response = await self._client.post(url, json=payload, timeout=self._timeout)
-            response.raise_for_status()
-            return response.json()
+            with Timer() as timer:
+                response = await self._client.post(
+                    url, json=payload, timeout=self._timeout,
+                    # The id crosses the process boundary here, so one
+                    # question and the sub-agent calls it produced share an id
+                    # across three containers.
+                    headers={"x-request-id": current_context().get("request_id", "")},
+                )
+                response.raise_for_status()
+                body = response.json()
         except Exception as e:
+            log_event(logger, "delegate.failed", level=logging.ERROR,
+                      agent=tool_name, url=url, error=type(e).__name__)
+            logger.error("delegated call to %s failed", tool_name, exc_info=True)
             raise ToolExecutionError(f"Error {e} while calling {tool_name} at {url}") from e
+
+        log_event(logger, "delegate.answer", agent=tool_name, ms=timer.ms,
+                  answer=body.get("answer") if isinstance(body, dict) else None,
+                  turn_id=body.get("turn_id") if isinstance(body, dict) else None)
+        return body

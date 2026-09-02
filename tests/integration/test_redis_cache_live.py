@@ -22,7 +22,9 @@ Requires Redis. Skipped when it is not reachable.
 
 from __future__ import annotations
 
+import asyncio
 import os
+import uuid
 
 import pytest
 
@@ -203,3 +205,30 @@ async def test_releasing_a_lock_never_taken_is_harmless(cache):
     the lock was never acquired."""
     adapter, _ = cache
     await adapter.release_lock("never-locked")
+
+
+@pytest.mark.asyncio
+async def test_releasing_an_expired_lock_does_not_raise(cache):
+    adapter, _ = cache
+    """The failure this prevents cost a correct answer.
+
+    RunAgentTurn releases the session lock in a `finally`, so anything raised
+    here replaces the value the turn was about to return. And the likeliest
+    cause is a turn that outlived its own lock timeout: the lock expired by
+    itself, another turn may hold it now, and there is nothing to release.
+    Losing the answer over that is the worst available outcome.
+    """
+    key = f"expiring-{uuid.uuid4()}"
+
+    # A one-second lease, then wait past it: the lock is gone from Redis while
+    # this adapter still holds the object it acquired.
+    assert await adapter.acquire_lock(key=key, timeout=1)
+    await asyncio.sleep(1.5)
+
+    await adapter.release_lock(key=key)  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_releasing_a_lock_that_was_never_acquired_is_a_no_op(cache):
+    adapter, _ = cache
+    await adapter.release_lock(key=f"never-held-{uuid.uuid4()}")
