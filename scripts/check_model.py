@@ -86,6 +86,18 @@ def ask(model: str) -> tuple[str, str]:
             message = json.loads(raw)["error"]["message"]
         except Exception:
             message = raw[:120]
+        if e.code == 401:
+            # A different problem from 403, and the distinction is the whole
+            # diagnosis. 403 is "this account cannot use this model" - one
+            # model, fixed in Model Studio. 401 is "the endpoint does not
+            # accept this key at all", which is never about the model, and
+            # shows up identically on every model in the list.
+            #
+            # The commonest cause is not a wrong key but a right key in the
+            # wrong place: DashScope keys are region-bound, and a Beijing key
+            # sent to the Singapore endpoint returns exactly this message -
+            # blaming the key rather than the region.
+            return "bad key", f"401 {message[:70]}"
         if e.code == 400 and "max_tokens" in message:
             # The account has the model; the request shape is wrong. A
             # different fix entirely, and "no access" would send someone to
@@ -165,14 +177,22 @@ def main() -> None:
         sys.exit("QWEN_API_KEY is not set in this shell.")
 
     print(f"endpoint: {BASE_URL}")
-    print(f"max_tokens: {MAX_TOKENS}\n")
+    print(f"max_tokens: {MAX_TOKENS}")
+    # Which key is in this shell, without printing it. An export left over
+    # from an earlier session overriding the one you meant to use has already
+    # cost this project an afternoon, and the shape alone settles it: a
+    # DashScope key starts sk- and is about fifty characters.
+    print(f"key: {len(API_KEY)} chars, starts {API_KEY[:6]!r}, "
+          f"ends {API_KEY[-4:]!r}\n")
     width = max(len(m) for m in (args.models or CANDIDATES)) + 2
     print(f"{'model':<{width}}{'verdict':<13}detail")
     print("-" * 78)
 
     usable = []
+    results = []
     for model in (args.models or CANDIDATES):
         verdict, detail = ask(model)
+        results.append((verdict, detail))
         if verdict == "TOOLS OK":
             usable.append(model)
         print(f"{model:<{width}}{verdict:<13}{detail}")
@@ -186,9 +206,37 @@ def main() -> None:
         print(f"\n  export QWEN_MODEL={usable[0]}")
         print("  docker compose -f deploy/docker-compose.yml up -d --force-recreate")
     else:
+        verdicts = {verdict for verdict, _ in results}
+
+        # Every model failing the same way is a fact about the key or the
+        # endpoint, not about the models - and saying "activate it in Model
+        # Studio" there sends someone to fix four models that are fine.
+        if verdicts == {"bad key"}:
+            other = ("https://dashscope.aliyuncs.com/compatible-mode/v1"
+                     if "intl" in BASE_URL
+                     else "https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
+            print(
+                "Every model returned 401, so this is the key or the endpoint -\n"
+                "not the models, and not anything to enable in Model Studio.\n\n"
+                "Most likely, in order:\n\n"
+                "  1. The key belongs to the other region. DashScope keys are\n"
+                "     region-bound and the wrong one returns exactly this\n"
+                "     message. Try:\n\n"
+                f"       QWEN_API_URL={other} \\\n"
+                "         python3 scripts/check_model.py qwen-plus\n\n"
+                "  2. The shell holds a different key than you think. Compare\n"
+                "     the fingerprint above with the key you meant to use - a\n"
+                "     DashScope key starts sk- and is about fifty characters.\n\n"
+                "  3. The key was revoked or is from another provider entirely."
+            )
+            return
+
         print(
             "None of these can call a tool with this key.\n"
-            "'no access' means the model needs activating in Model Studio.\n"
+            "'bad key' is a 401 - the endpoint does not accept this key at all,\n"
+            "which is never about the model. Usually the wrong region.\n"
+            "'no access' is a 403 - the key works, the model needs activating\n"
+            "in Model Studio.\n"
             "'max_tokens' means the model is available but rejects the "
             "configured QWEN_MAX_TOKENS - lower it; qwen-max caps at 8192.\n"
             "'no tools' means it answered in prose - it cannot drive this system,\n"
