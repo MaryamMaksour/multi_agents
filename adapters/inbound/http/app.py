@@ -35,7 +35,6 @@ from domain.exceptions import (
     SessionBusyError,
     UnknownAgentError,
 )
-from libs.agent_core import config
 from libs.agent_core.composition import open_runtime
 
 
@@ -203,17 +202,18 @@ def create_app(open_runtime_fn=open_runtime) -> FastAPI:
         absent - "why is nothing answering about loans" is a much shorter
         question when the answer is a status.
         """
-        from adapters.outbound.registry.file_agent_registry_adapter import (
-            FileAgentRegistryAdapter,
-        )
-
-        registry = FileAgentRegistryAdapter(config.AGENTS_REGISTRY_PATH)
+        runtime = request.app.state.runtime
+        if runtime.registry is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"This process has no registry to list ({runtime.kind}).",
+            )
         return [
             AgentSummary(
                 key=spec.name, display_name=spec.display_name,
                 description=spec.description, status=spec.status.value,
             )
-            for spec in await registry.list_active()
+            for spec in await runtime.registry.list_active()
         ]
 
     return app

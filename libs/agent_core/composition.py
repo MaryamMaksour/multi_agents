@@ -55,6 +55,7 @@ from adapters.outbound.tools.http_delegate_tool_adapter import HttpDelegateToolA
 from adapters.outbound.tools.sql_tool_adapter import SqlToolAdapter
 from domain.entities.provider_spec import AgentType, ProviderSpec
 from domain.interactors.run_agent_turn import RunAgentTurn
+from domain.ports.agent_registry_port import AgentRegistryPort
 from libs.agent_core import config
 from libs.agent_core.agent_startup import ReadyAgent, start_agent
 from libs.agent_core.prompts import (
@@ -224,6 +225,7 @@ class Runtime:
     turn: RunAgentTurn
     agent: ReadyAgent | None = None
     routes_to: tuple[str, ...] = ()
+    registry: AgentRegistryPort | None = None
     closers: list[Callable] = field(default_factory=list)
 
     def allowed_tables_or_empty(self) -> tuple[str, ...]:
@@ -448,8 +450,8 @@ async def open_runtime(agent_key: str | None = None) -> Runtime:
             session_ttl_seconds=config.SESSION_TTL_SECONDS,
         )
         urls, _ = delegate_targets(specs, config.AGENT_URL_TEMPLATE)
-        return Runtime(kind="orchestrator", turn=turn,
-                       routes_to=tuple(urls), closers=closers)
+        return Runtime(kind="orchestrator", turn=turn, routes_to=tuple(urls),
+                       registry=registry, closers=closers)
 
     except Exception:
         # Half-open resources are worse than none: a failed startup that

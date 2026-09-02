@@ -198,6 +198,13 @@ async def test_params_without_a_limit_and_offset_are_refused():
     assert "limit" in result["error"].lower()
 
 
+async def test_a_non_numeric_limit_is_a_message_not_a_traceback():
+    """`int("ten")` used to escape as ValueError and reach the model as a
+    Python traceback; the other guards all return a sentence it can act on."""
+    result = await adapter().call_tool("db_execute", paged(params=("ten", 0)))
+    assert "integer" in result["error"].lower()
+
+
 async def test_a_disallowed_table_is_refused_before_reaching_the_database():
     db = FakeDatabase()
     result = await adapter(db=db).call_tool(

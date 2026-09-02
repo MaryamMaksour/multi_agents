@@ -16,6 +16,7 @@ import asyncio
 class _GraphState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     pagination: dict[str, PaginationState]
+    turn_id: str | None
 
 
 class LangGraphAgentLoopAdapter:
@@ -81,7 +82,8 @@ class LangGraphAgentLoopAdapter:
 
         
 
-    async def _invoke_one_tool(self, tool_call_msg: dict, pagination: dict) -> tuple:
+    async def _invoke_one_tool(self, tool_call_msg: dict, pagination: dict,
+                               turn_id: str | None) -> tuple:
         tool_name = tool_call_msg.get("name")
         page_info = pagination.get(tool_name)
 
@@ -89,7 +91,9 @@ class LangGraphAgentLoopAdapter:
             result = {"error": f"Pagination limit reached: max_pages_per_tool={self._max_pages_per_tool}"}
         else:
             try:
-                result = await self._tools.call_tool(tool_name=tool_name, args=tool_call_msg.get("args", {}))
+                result = await self._tools.call_tool(
+                    tool_name=tool_name, args=tool_call_msg.get("args", {}), turn_id=turn_id,
+                )
             except (UnknownToolError, ToolExecutionError) as e:
                 result = {"error": str(e)}
 
@@ -113,7 +117,10 @@ class LangGraphAgentLoopAdapter:
     async def _take_action(self, state: _GraphState) -> dict:
         tool_calls_msgs = state["messages"][-1].tool_calls
         pagination = dict(state.get("pagination", {}))
-        results = await asyncio.gather(*(self._invoke_one_tool(call, pagination) for call in tool_calls_msgs))
+        turn_id = state.get("turn_id")
+        results = await asyncio.gather(
+            *(self._invoke_one_tool(call, pagination, turn_id) for call in tool_calls_msgs)
+        )
 
         tool_messages = [tm for tm, _ in results]
         for _, update in results:
@@ -137,12 +144,13 @@ class LangGraphAgentLoopAdapter:
         return graph.compile()
 
     # ---- intrance point ----
-    async def run(self, messages: list[ChatMessage]) -> AgentTurnResult:
+    async def run(self, messages: list[ChatMessage], turn_id: str | None = None) -> AgentTurnResult:
         """Raises: LLMRequestError: if the LLM call fails."""
         messages_lc = [self._to_lc_message(m) for m in messages]
         initial_state = {
             "messages": messages_lc,
             "pagination": {},
+            "turn_id": turn_id,
         }
         state = await self._graph.ainvoke(initial_state)
         result_messages = [self._to_chat_message(m) for m in state["messages"][len(messages):]]

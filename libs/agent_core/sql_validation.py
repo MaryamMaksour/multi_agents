@@ -20,8 +20,9 @@ from __future__ import annotations
 import re
 
 import sqlparse
-from sqlparse.sql import Identifier, IdentifierList, Parenthesis, TokenList
+from sqlparse.sql import Comment, Function, Identifier, IdentifierList, Parenthesis, TokenList
 from sqlparse.tokens import Keyword
+from sqlparse.tokens import Comment as CommentToken
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -32,6 +33,24 @@ _TABLE_KEYWORDS = frozenset({
     "FROM", "JOIN", "INNER JOIN", "LEFT JOIN", "RIGHT JOIN", "FULL JOIN",
     "CROSS JOIN", "LEFT OUTER JOIN", "RIGHT OUTER JOIN", "FULL OUTER JOIN",
     "STRAIGHT_JOIN", "NATURAL JOIN",
+})
+
+# Functions a SELECT may not call. None of them reads a table, so the table
+# allowlist never sees them, and each one reaches past the query: `set_config`
+# and `set_role` change who the connection is (the authenticator is a member
+# of every agent role, so `set_config('role', ...)` is a scope change);
+# `pg_sleep` holds a pooled connection; the `pg_read_*`/`pg_ls_*`/`lo_*`
+# families touch the database host's filesystem; `dblink`/`pg_*_query` open
+# a second connection with the server's own credentials. The rolled-back
+# transaction in the database adapter would contain the first; the rest are
+# refused here because the model has no legitimate reason to call any of
+# them and a clear message beats a permission error.
+_DENIED_FUNCTIONS = frozenset({
+    "set_config", "set_role", "pg_sleep", "pg_sleep_for", "pg_sleep_until",
+    "pg_read_file", "pg_read_binary_file", "pg_ls_dir", "pg_stat_file",
+    "pg_terminate_backend", "pg_cancel_backend", "pg_reload_conf",
+    "lo_import", "lo_export", "lo_get", "lo_put", "dblink", "dblink_exec",
+    "dblink_connect", "query_to_xml", "current_setting",
 })
 
 
@@ -96,9 +115,31 @@ def _is_derived_table(token) -> bool:
 
 
 def _next_meaningful(tokens: list, start: int):
+    """The first token after `start` that is neither whitespace nor a comment.
+
+    sqlparse hands a comment back as a `sql.Comment` group (ttype None), and
+    a bare comment token carries a sub-type (`Comment.Multiline`), so neither
+    is caught by `ttype is Comment` - which let `JOIN /* */ members` past the
+    allowlist with the comment standing where the table name was checked.
+    """
     for token in tokens[start + 1:]:
-        if not token.is_whitespace and token.ttype is not sqlparse.tokens.Comment:
-            return token
+        if token.is_whitespace or isinstance(token, Comment) or token.ttype in CommentToken:
+            continue
+        return token
+    return None
+
+
+def _denied_function(tokens: list) -> str | None:
+    """The first denied function called anywhere in the tree, or None."""
+    for token in tokens:
+        if isinstance(token, Function):
+            name = (token.get_real_name() or "").lower()
+            if name in _DENIED_FUNCTIONS:
+                return name
+        if token.is_group:
+            found = _denied_function(token.tokens)
+            if found:
+                return found
     return None
 
 
@@ -158,10 +199,16 @@ def validate_readonly_query(query: str, allowed_tables) -> str | None:
       - the statement is a SELECT
       - every table named after FROM or a JOIN is in `allowed_tables`, at any
         depth: subqueries, derived tables and CTE bodies included
+      - no call to a function in `_DENIED_FUNCTIONS`, at any depth
 
     `allowed_tables` may be any container of lowercase names; membership is
     tested against lowercased table names.
     """
+    # Comments carry no meaning to Postgres but they do to sqlparse's grouper:
+    # `FROM books, /* */ members` stops being one IdentifierList and the second
+    # table is never looked at. Strip them before parsing so the tree that is
+    # checked has the shape the rules were written for.
+    query = sqlparse.format(query, strip_comments=True)
     statements = [s for s in sqlparse.parse(query) if str(s).strip(" \t\n;")]
     if len(statements) != 1:
         return "Multiple statements are not allowed."
@@ -169,6 +216,10 @@ def validate_readonly_query(query: str, allowed_tables) -> str | None:
     statement = statements[0]
     if statement.get_type() != "SELECT":
         return "Only SELECT queries are allowed."
+
+    denied = _denied_function(statement.tokens)
+    if denied:
+        return f"Function not allowed: {denied}"
 
     scope = {t.lower() for t in allowed_tables} | _cte_names(statement)
     return _check_tokens(statement.tokens, scope)

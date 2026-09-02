@@ -119,9 +119,11 @@ class FakeAgentLoop:
         )
         self.error = error
         self.received: list[list[ChatMessage]] = []
+        self.turn_ids: list[str | None] = []
 
-    async def run(self, messages: list[ChatMessage]) -> AgentTurnResult:
+    async def run(self, messages: list[ChatMessage], turn_id: str | None = None) -> AgentTurnResult:
         self.received.append(list(messages))
+        self.turn_ids.append(turn_id)
         if self.error is not None:
             raise self.error
         return self.result
@@ -156,9 +158,11 @@ class FakeTools:
         self.results = results or {}
         self.error = error
         self.calls: list[tuple[str, dict]] = []
+        self.turn_ids: list[str | None] = []
 
-    async def call_tool(self, tool_name: str, args: dict):
+    async def call_tool(self, tool_name: str, args: dict, turn_id: str | None = None):
         self.calls.append((tool_name, args))
+        self.turn_ids.append(turn_id)
         if self.error is not None:
             raise self.error
         return self.results.get(tool_name, {"ok": True})

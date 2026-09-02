@@ -76,8 +76,9 @@ def sub_agent_runtime(turn=None, tables=("books", "authors")):
                    agent=ReadyAgent(spec=spec, schema=schema))
 
 
-def orchestrator_runtime(turn=None, routes=("catalog", "circulation")):
-    return Runtime(kind="orchestrator", turn=turn or FakeTurn(), routes_to=routes)
+def orchestrator_runtime(turn=None, routes=("catalog", "circulation"), registry=None):
+    return Runtime(kind="orchestrator", turn=turn or FakeTurn(), routes_to=routes,
+                   registry=registry)
 
 
 def client_for(runtime):
@@ -276,16 +277,23 @@ def test_an_empty_turn_gives_an_empty_answer_rather_than_raising():
 # --------------------------------------------------------------------------
 
 
-def test_agents_lists_what_the_registry_holds(monkeypatch):
-    from libs.agent_core import config
+def test_agents_lists_what_the_registry_holds():
+    from adapters.outbound.registry.file_agent_registry_adapter import (
+        FileAgentRegistryAdapter,
+    )
 
-    monkeypatch.setattr(config, "AGENTS_REGISTRY_PATH", "seeds/agents.example.json")
-    with client_for(orchestrator_runtime()) as client:
+    registry = FileAgentRegistryAdapter("seeds/agents.example.json")
+    with client_for(orchestrator_runtime(registry=registry)) as client:
         body = client.get("/agents").json()
 
     assert [a["key"] for a in body] == ["catalog", "circulation"]
     assert body[0]["display_name"] == "Catalogue"
     assert body[0]["status"] == "active"
+
+
+def test_agents_is_404_where_there_is_no_registry():
+    with client_for(sub_agent_runtime()) as client:
+        assert client.get("/agents").status_code == 404
 
 
 # --------------------------------------------------------------------------
