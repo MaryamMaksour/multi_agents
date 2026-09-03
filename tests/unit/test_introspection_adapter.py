@@ -218,3 +218,43 @@ async def test_valid_identifiers_are_quoted_in_the_query():
     query = db.queries[0][0]
     assert '"genre"' in query
     assert '"books"' in query
+
+
+# --------------------------------------------------------------------------
+# has_any_value - the empty vector column check
+# --------------------------------------------------------------------------
+
+
+async def test_presence_is_asked_with_limit_one():
+    """Existence, not a count: counting would read every embedding in the
+    table to answer what the first row settles."""
+    db = FakeDatabase([[{"present": 1}]])
+
+    assert await PostgresIntrospectionAdapter(db).has_any_value("books", "embed_summary") is True
+
+    query, _ = db.queries[0]
+    assert "LIMIT 1" in query
+    assert 'WHERE "embed_summary" IS NOT NULL' in query
+    assert '"public"."books"' in query
+
+
+async def test_a_column_of_nulls_reports_absent():
+    db = FakeDatabase([[]])
+    assert await PostgresIntrospectionAdapter(db).has_any_value("books", "embed_summary") is False
+
+
+async def test_presence_is_scoped_to_the_configured_schema():
+    db = FakeDatabase([[]])
+    await PostgresIntrospectionAdapter(db, schema="library").has_any_value("books", "embed_summary")
+
+    assert '"library"."books"' in db.queries[0][0]
+
+
+@pytest.mark.parametrize("name", ['books"; DROP TABLE books; --', "books-1", ""])
+async def test_a_name_that_is_not_an_identifier_is_refused(name):
+    """These are interpolated rather than parameterised, because a table
+    name cannot be a bind parameter - so the validation is the safety."""
+    db = FakeDatabase([[]])
+    with pytest.raises(DatabaseError):
+        await PostgresIntrospectionAdapter(db).has_any_value(name, "embed_summary")
+    assert db.queries == []

@@ -84,6 +84,9 @@ class RoleScopedSchemaPort:
         self.probes.append((table, column))
         return ("one", "two", "three")[:limit]
 
+    async def has_any_value(self, table, column):
+        return True
+
 
 # --------------------------------------------------------------------------
 # verify_grants, on its own

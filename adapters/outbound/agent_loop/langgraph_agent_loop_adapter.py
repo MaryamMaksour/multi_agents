@@ -5,25 +5,32 @@ from operator import add as add_messages
 
 from domain.entities.chat_message import ChatMessage, Role, ToolCall
 from domain.entities.agent_turn import AgentTurnResult, PaginationState
-from domain.exceptions import UnknownToolError, ToolExecutionError, LLMRequestError
+from domain.exceptions import UnknownToolError, ToolExecutionError
 from domain.ports.llm_port import LLMPort
 from domain.ports.tool_port import ToolPort
 
 import json
 import asyncio
+import logging
+import time
+
+logger = logging.getLogger(__name__)
 
 
 class _GraphState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     pagination: dict[str, PaginationState]
     turn_id: str | None
+    steps: int
 
 
 class LangGraphAgentLoopAdapter:
-    def __init__(self, llm: LLMPort, tools: ToolPort, max_pages_per_tool: int = 5):
+    def __init__(self, llm: LLMPort, tools: ToolPort, max_pages_per_tool: int = 5,
+                 max_steps: int = 12):
         self._llm = llm
         self._tools = tools
         self._max_pages_per_tool = max_pages_per_tool
+        self._max_steps = max_steps
         self._graph = self._build_graph()
 
     # ----  ChatMessage <-> LangChain BaseMessage ----
@@ -71,31 +78,62 @@ class LangGraphAgentLoopAdapter:
 
     # ----  graph nodes ----
     async def _call_llm(self, state: _GraphState) -> dict:
-  
+
         chat_messages = [ self._to_chat_message(message) for message in state["messages"] ]
- 
+
+        started = time.monotonic()
         result = await self._llm.achat(chat_messages)
+        logger.info(
+            "model answered",
+            extra={
+                "turn_id": state.get("turn_id"),
+                "step": state.get("steps", 0) + 1,
+                "messages_sent": len(chat_messages),
+                "tool_calls": [call.name for call in (result.tool_calls or [])],
+                "elapsed_ms": round((time.monotonic() - started) * 1000),
+            },
+        )
 
         ai_messages = self._to_lc_message(result)
-  
-        return {"messages": [ai_messages]}
 
-        
+        return {"messages": [ai_messages], "steps": state.get("steps", 0) + 1}
+
 
     async def _invoke_one_tool(self, tool_call_msg: dict, pagination: dict,
                                turn_id: str | None) -> tuple:
         tool_name = tool_call_msg.get("name")
         page_info = pagination.get(tool_name)
 
+        args = tool_call_msg.get("args", {})
+        started = time.monotonic()
+
         if page_info and page_info.pages_fetched >= self._max_pages_per_tool:
             result = {"error": f"Pagination limit reached: max_pages_per_tool={self._max_pages_per_tool}"}
         else:
             try:
                 result = await self._tools.call_tool(
-                    tool_name=tool_name, args=tool_call_msg.get("args", {}), turn_id=turn_id,
+                    tool_name=tool_name, args=args, turn_id=turn_id,
                 )
             except (UnknownToolError, ToolExecutionError) as e:
                 result = {"error": str(e)}
+
+        # The arguments in full, because "how many Arabic novels under 300
+        # pages" arriving as a query with no genre filter is the single line
+        # that separates a bad delegation from a bad sub-agent. The formatter
+        # in logging_setup keeps configured secrets out of it.
+        logger.info(
+            "tool called",
+            extra={
+                "turn_id": turn_id,
+                "tool": tool_name,
+                # not "args": logging.LogRecord already has one, and `extra`
+                # refuses to overwrite it.
+                "tool_args": args,
+                "error": result.get("error") if isinstance(result, dict) else None,
+                "row_count": result.get("row_count") if isinstance(result, dict) else None,
+                "elapsed_ms": round((time.monotonic() - started) * 1000),
+            },
+        )
 
         pagination_update = None
         if isinstance(result, dict) and "has_more" in result:
@@ -131,7 +169,20 @@ class LangGraphAgentLoopAdapter:
         return {"messages": tool_messages, "pagination": pagination}
 
     def _should_continue(self, state: _GraphState) -> bool:
+        """Whether to run the tools the model just asked for.
+
+        The step budget stops here rather than at the tool call, so a turn
+        that hits it ends on the model's own last message instead of on a
+        tool result. Without a budget the loop runs until LangGraph's
+        recursion limit raises - after paying for every call in between.
+        """
         last = state["messages"][-1]
+        if state.get("steps", 0) >= self._max_steps:
+            logger.warning(
+                "step budget reached; answering with what the turn has",
+                extra={"turn_id": state.get("turn_id"), "max_steps": self._max_steps},
+            )
+            return False
         return bool(getattr(last, "tool_calls", None))
 
     def _build_graph(self):
@@ -151,6 +202,7 @@ class LangGraphAgentLoopAdapter:
             "messages": messages_lc,
             "pagination": {},
             "turn_id": turn_id,
+            "steps": 0,
         }
         state = await self._graph.ainvoke(initial_state)
         result_messages = [self._to_chat_message(m) for m in state["messages"][len(messages):]]

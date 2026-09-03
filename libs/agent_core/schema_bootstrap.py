@@ -63,6 +63,11 @@ class AgentSchema:
     classified: dict[str, dict[str, ColumnFilter]]
     unprobed: tuple[str, ...] = ()
 
+    # "table.embed_col" for every vector column that holds nothing. Reported
+    # rather than only acted on, so a deployment can see that a semantic
+    # search it expected is not being offered - and why.
+    empty_vectors: tuple[str, ...] = ()
+
 
 def render_columns(
     table: TableSchema, enum_values: dict[str, tuple[str, ...]] | None = None,
@@ -70,7 +75,7 @@ def render_columns(
     """The column block the model reads, in the shape the adapter parses.
 
     `_extract_column_names` reads this back with a `name type` regex when it
-    validates a column in get_lsit_values, so the first two fields on each
+    validates a column in get_list_values, so the first two fields on each
     line are load-bearing and anything after them is for the model.
 
     The enum values go here as well as in the filter guidance, and the
@@ -102,7 +107,9 @@ def render_columns(
     return "\n".join(lines)
 
 
-def columns_needing_a_count(table: TableSchema) -> tuple[str, ...]:
+def columns_needing_a_count(
+    table: TableSchema, unpopulated_vectors: frozenset[str] = frozenset(),
+) -> tuple[str, ...]:
     """Which columns are worth a distinct-count probe.
 
     Asks the classifier what each column would be with no count at all. Only
@@ -115,12 +122,15 @@ def columns_needing_a_count(table: TableSchema) -> tuple[str, ...]:
     """
     return tuple(
         c.name for c in table.columns
-        if classify_column(table, c, None) is FilterKind.TEXT
+        if classify_column(table, c, None, unpopulated_vectors) is FilterKind.TEXT
     )
 
 
 async def read_enum_values(
-    schema_port: SchemaPort, table: TableSchema, counts: dict[str, int],
+    schema_port: SchemaPort,
+    table: TableSchema,
+    counts: dict[str, int],
+    unpopulated_vectors: frozenset[str] = frozenset(),
 ) -> tuple[dict[str, tuple[str, ...]], tuple[str, ...]]:
     """Read the values of the columns that turned out to be enums.
 
@@ -139,7 +149,10 @@ async def read_enum_values(
     unread: list[str] = []
 
     for column in table.columns:
-        if classify_column(table, column, counts.get(column.name)) is not FilterKind.ENUM:
+        kind = classify_column(
+            table, column, counts.get(column.name), unpopulated_vectors
+        )
+        if kind is not FilterKind.ENUM:
             continue
         try:
             values[column.name] = await schema_port.distinct_values(
@@ -151,8 +164,37 @@ async def read_enum_values(
     return values, tuple(unread)
 
 
-async def count_distinct_values(
+async def find_empty_vectors(
     schema_port: SchemaPort, table: TableSchema,
+) -> tuple[str, ...]:
+    """Which of the table's vector columns hold nothing at all.
+
+    A vector column that was created and never filled is the worst kind of
+    failure this system can have: every semantic search against it matches
+    zero rows, raises nothing, and the model reports that the table is empty
+    when it has four hundred rows. So it is measured at startup and the
+    column is classified as if the embedding did not exist.
+
+    A probe that fails is not a startup failure, and it is not evidence of
+    emptiness either: an unreadable column is left advertised, which is the
+    behaviour before this check existed.
+    """
+    empty: list[str] = []
+    for column in table.columns:
+        if not column.is_vector:
+            continue
+        try:
+            if not await schema_port.has_any_value(table.name, column.name):
+                empty.append(column.name)
+        except DatabaseError:
+            continue
+    return tuple(empty)
+
+
+async def count_distinct_values(
+    schema_port: SchemaPort,
+    table: TableSchema,
+    unpopulated_vectors: frozenset[str] = frozenset(),
 ) -> tuple[dict[str, int], tuple[str, ...]]:
     """Probe the columns that need it. Returns the counts and the failures.
 
@@ -162,7 +204,7 @@ async def count_distinct_values(
     counts: dict[str, int] = {}
     unprobed: list[str] = []
 
-    for column in columns_needing_a_count(table):
+    for column in columns_needing_a_count(table, unpopulated_vectors):
         try:
             counts[column] = await schema_port.distinct_count(table.name, column)
         except DatabaseError:
@@ -198,19 +240,29 @@ async def load_agent_schema(
     filters: dict[str, dict[str, str]] = {}
     classified: dict[str, dict[str, ColumnFilter]] = {}
     unprobed: list[str] = []
+    empty_vectors: list[str] = []
 
     for table in described.values():
         key = table.name.lower()
 
+        unpopulated = await find_empty_vectors(schema_port, table)
+        empty_vectors.extend(f"{table.name}.{name}" for name in unpopulated)
+
         if probe_cardinality:
-            counts, failed = await count_distinct_values(schema_port, table)
+            counts, failed = await count_distinct_values(
+                schema_port, table, frozenset(unpopulated)
+            )
             unprobed.extend(failed)
-            values, unread = await read_enum_values(schema_port, table, counts)
+            values, unread = await read_enum_values(
+                schema_port, table, counts, frozenset(unpopulated)
+            )
             unprobed.extend(unread)
         else:
             counts, values = {}, {}
 
-        column_filters = classify_table(table, counts, dist_op, values)
+        column_filters = classify_table(
+            table, counts, dist_op, values, frozenset(unpopulated)
+        )
 
         schema[key] = {"columns": render_columns(table, values)}
         classified[key] = column_filters
@@ -222,4 +274,5 @@ async def load_agent_schema(
         filters=filters,
         classified=classified,
         unprobed=tuple(unprobed),
+        empty_vectors=tuple(empty_vectors),
     )

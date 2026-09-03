@@ -82,6 +82,7 @@ def assemble_sub_agent(
     dist_op: str = "<=>",
     vector_ttl_seconds: int = 900,
     max_pages_per_tool: int = 5,
+    max_steps: int = 12,
     max_session_messages: int = 40,
     context_messages_sent: int = 20,
     session_ttl_seconds: int = 60 * 60 * 24 * 3,
@@ -107,7 +108,6 @@ def assemble_sub_agent(
         allowed_tables=list(ready.allowed_tables),
         schema=ready.schema.schema,
         filters=ready.schema.filters,
-        lsit_values={},
         dist_op=dist_op,
         vector_ttl_seconds=vector_ttl_seconds,
     )
@@ -115,6 +115,7 @@ def assemble_sub_agent(
         llm=llm_factory(tools.get_tool_schemas()),
         tools=tools,
         max_pages_per_tool=max_pages_per_tool,
+        max_steps=max_steps,
     )
     return RunAgentTurn(
         agent_loop=loop,
@@ -161,6 +162,7 @@ def assemble_orchestrator(
     url_template: str = config.AGENT_URL_TEMPLATE,
     timeout: int = 60,
     max_pages_per_tool: int = 5,
+    max_steps: int = 12,
     max_session_messages: int = 40,
     context_messages_sent: int = 20,
     session_ttl_seconds: int = 60 * 60 * 24 * 3,
@@ -194,6 +196,7 @@ def assemble_orchestrator(
         llm=llm_factory(tools.get_tool_schemas()),
         tools=tools,
         max_pages_per_tool=max_pages_per_tool,
+        max_steps=max_steps,
     )
     return RunAgentTurn(
         agent_loop=loop,
@@ -376,11 +379,13 @@ async def open_runtime(agent_key: str | None = None) -> Runtime:
 
     embeddings = QwenEmbeddingAdapter(embed_client, config.QWEN_EMBED_MODEL)
 
+    extra_body = config.llm_extra_body()
+
     def llm_factory(tool_schemas):
         return QwenLLMAdapter(
             client=llm_client, model=config.QWEN_MODEL,
             temperature=config.QWEN_TEMPERATURE, max_tokens=config.QWEN_MAX_TOKENS,
-            tools=tool_schemas,
+            tools=tool_schemas, extra_body=extra_body,
         )
 
     # History is written by the service, not by an agent, so it goes through
@@ -421,6 +426,7 @@ async def open_runtime(agent_key: str | None = None) -> Runtime:
                     dist_op=config.DIST_OP,
                     vector_ttl_seconds=config.VECTOR_TTL_SECONDS,
                     max_pages_per_tool=config.MAX_PAGES_PER_TOOL,
+                    max_steps=config.AGENT_MAX_STEPS,
                     max_session_messages=config.MAX_SESSION_MESSAGES,
                     context_messages_sent=config.CONTEXT_MESSAGES_SENT,
                     session_ttl_seconds=config.SESSION_TTL_SECONDS,
@@ -445,6 +451,7 @@ async def open_runtime(agent_key: str | None = None) -> Runtime:
             llm_factory=llm_factory, url_template=config.AGENT_URL_TEMPLATE,
             timeout=config.TOOLS_HTTP_TIMEOUT_SECS,
             max_pages_per_tool=config.MAX_PAGES_PER_TOOL,
+            max_steps=config.AGENT_MAX_STEPS,
             max_session_messages=config.MAX_SESSION_MESSAGES,
             context_messages_sent=config.CONTEXT_MESSAGES_SENT,
             session_ttl_seconds=config.SESSION_TTL_SECONDS,

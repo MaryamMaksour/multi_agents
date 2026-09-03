@@ -1,0 +1,135 @@
+{
+  // Run the services on the host, against the containers from
+  // deploy/docker-compose.dev.yml (Postgres on 55432, Redis on 56379).
+  //
+  // Every configuration reads deploy/.env first - that is where QWEN_API_KEY
+  // lives - and then overrides the parts that differ between "inside compose"
+  // and "on this machine": the database host, the Redis URL, and the registry,
+  // because http://agent-catalog:8000 is a compose service name and does not
+  // resolve here.
+  "version": "0.2.0",
+
+  "inputs": [
+    {
+      "id": "question",
+      "type": "promptString",
+      "description": "Question to ask the orchestrator",
+      "default": "How many Arabic novels under 300 pages?"
+    }
+  ],
+
+  "configurations": [
+    {
+      // No AGENT_KEY, so this process is the orchestrator: it serves /ask and
+      // holds one delegate tool per registered agent.
+      "name": "Orchestrator (:8000)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "envFile": "${workspaceFolder}/deploy/.env",
+      "env": {
+        "AGENT_KEY": "",
+        "HTTP_PORT": "8000",
+        "PG_HOST": "127.0.0.1",
+        "PG_PORT": "55432",
+        "PG_DBNAME": "library_dev",
+        "REDIS_URL": "redis://127.0.0.1:56379/1",
+        "AGENTS_REGISTRY_PATH": "seeds/agents.local.json"
+      }
+    },
+    {
+      // AGENT_KEY set, so the same file becomes one sub-agent serving /run.
+      // The port has to match this key's endpoint in seeds/agents.local.json.
+      "name": "Agent: catalog (:8001)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "envFile": "${workspaceFolder}/deploy/.env",
+      "env": {
+        "AGENT_KEY": "catalog",
+        "HTTP_PORT": "8001",
+        "PG_HOST": "127.0.0.1",
+        "PG_PORT": "55432",
+        "PG_DBNAME": "library_dev",
+        "REDIS_URL": "redis://127.0.0.1:56379/1",
+        "AGENTS_REGISTRY_PATH": "seeds/agents.local.json"
+      }
+    },
+    {
+      "name": "Agent: circulation (:8002)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "envFile": "${workspaceFolder}/deploy/.env",
+      "env": {
+        "AGENT_KEY": "circulation",
+        "HTTP_PORT": "8002",
+        "PG_HOST": "127.0.0.1",
+        "PG_PORT": "55432",
+        "PG_DBNAME": "library_dev",
+        "REDIS_URL": "redis://127.0.0.1:56379/1",
+        "AGENTS_REGISTRY_PATH": "seeds/agents.local.json"
+      }
+    },
+    {
+      // The scripted model from the README: an OpenAI-compatible server that
+      // needs no key and decides nothing. Start it, then point the three
+      // services above at it by setting these in deploy/.env:
+      //   QWEN_API_URL=http://127.0.0.1:11435/v1
+      //   QWEN_API_KEY=demo
+      //   QWEN_EMBED_MODEL=demo
+      "name": "Scripted model (:11435)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/demo_model.py",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Streamlit console",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "streamlit",
+      "args": ["run", "ui/app.py"],
+      "console": "integratedTerminal",
+      "env": { "ORCHESTRATOR_URL": "http://127.0.0.1:8000" }
+    },
+    {
+      "name": "Ask a question (scripts/first_question.py)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/first_question.py",
+      "console": "integratedTerminal",
+      "env": { "ORCHESTRATOR_URL": "http://127.0.0.1:8000" }
+    },
+    {
+      "name": "Pytest: current file",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["${file}", "-vv"],
+      "console": "integratedTerminal",
+      "justMyCode": false
+    }
+  ],
+
+  "compounds": [
+    {
+      // The whole system on the host. The agents come up first; the
+      // orchestrator only needs them when a question arrives, so ordering
+      // beyond this is not worth arranging.
+      "name": "Full stack (agents + orchestrator)",
+      "configurations": [
+        "Agent: catalog (:8001)",
+        "Agent: circulation (:8002)",
+        "Orchestrator (:8000)"
+      ],
+      "stopAll": true
+    }
+  ]
+}

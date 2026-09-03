@@ -24,11 +24,13 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from adapters.inbound.http import schemas
 from adapters.inbound.http.app import create_app, final_answer
 from domain.entities.agent_turn import AgentTurnResult, PaginationState
 from domain.entities.chat_message import ChatMessage, Role, ToolCall
 from domain.entities.provider_spec import AgentStatus, ProviderSpec
-from domain.exceptions import SessionBusyError
+from domain.exceptions import CacheError, SessionBusyError
+from libs.agent_core import config
 from libs.agent_core.agent_startup import ReadyAgent
 from libs.agent_core.composition import Runtime
 from libs.agent_core.schema_bootstrap import AgentSchema
@@ -345,3 +347,101 @@ def test_a_sub_agent_reports_no_delegation():
         body = client.post("/run", json={"user_input": "q"}).json()
 
     assert "delegated" not in body or body["delegated"] == []
+
+
+# --------------------------------------------------------------------------
+# what /health says beyond "ok"
+# --------------------------------------------------------------------------
+
+
+def test_health_names_the_model_it_is_running(monkeypatch):
+    """Two processes of the same image differing only in a model name is a
+    normal deployment, and telling them apart should not need a question."""
+    monkeypatch.setattr(config, "QWEN_MODEL", "qwen-plus")
+
+    with client_for(sub_agent_runtime()) as client:
+        assert client.get("/health").json()["model"] == "qwen-plus"
+
+
+# --------------------------------------------------------------------------
+# request size limits
+# --------------------------------------------------------------------------
+
+
+def test_a_question_longer_than_the_limit_is_refused():
+    """One question is an embedding call plus several model calls priced per
+    token, so an unbounded body is an unbounded bill."""
+    with client_for(orchestrator_runtime()) as client:
+        response = client.post("/ask", json={
+            "question": "x" * (schemas.MAX_QUESTION_CHARS + 1), "session_id": "s",
+        })
+
+    assert response.status_code == 422
+
+
+def test_a_delegated_question_longer_than_the_limit_is_refused():
+    with client_for(sub_agent_runtime()) as client:
+        response = client.post("/run", json={
+            "user_input": "x" * (schemas.MAX_QUESTION_CHARS + 1),
+        })
+
+    assert response.status_code == 422
+
+
+def test_a_question_at_the_limit_is_accepted():
+    with client_for(orchestrator_runtime()) as client:
+        response = client.post("/ask", json={
+            "question": "x" * schemas.MAX_QUESTION_CHARS, "session_id": "s",
+        })
+
+    assert response.status_code == 200
+
+
+def test_an_empty_question_is_still_refused():
+    with client_for(orchestrator_runtime()) as client:
+        assert client.post("/ask", json={"question": "", "session_id": "s"}).status_code == 422
+
+
+# --------------------------------------------------------------------------
+# whether a 500 names the exception
+# --------------------------------------------------------------------------
+
+
+def test_a_domain_error_names_itself_when_errors_are_exposed(monkeypatch):
+    monkeypatch.setattr(config, "EXPOSE_ERRORS", True)
+    turn = FakeTurn(raises=CacheError("Extra data: line 1 column 9"))
+
+    with client_for(orchestrator_runtime(turn)) as client:
+        response = client.post("/ask", json={"question": "q", "session_id": "s"})
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "CacheError: Extra data: line 1 column 9"
+
+
+def test_a_domain_error_is_generic_when_errors_are_not_exposed(monkeypatch):
+    """A deployment reachable by people who are not operating it should not
+    answer questions about its internals."""
+    monkeypatch.setattr(config, "EXPOSE_ERRORS", False)
+    turn = FakeTurn(raises=CacheError("Extra data: line 1 column 9"))
+
+    with client_for(orchestrator_runtime(turn)) as client:
+        response = client.post("/ask", json={"question": "q", "session_id": "s"})
+
+    assert response.status_code == 500
+    assert "CacheError" not in response.json()["detail"]
+    assert "logs" in response.json()["detail"]
+
+
+def test_the_exception_is_logged_either_way(monkeypatch, capsys):
+    """Hiding the exception from the caller must not hide it from whoever is
+    debugging. Read from stderr rather than caplog, because the app installs
+    its own root handler on startup."""
+    monkeypatch.setattr(config, "EXPOSE_ERRORS", False)
+    turn = FakeTurn(raises=CacheError("boom"))
+
+    with client_for(orchestrator_runtime(turn)) as client:
+        client.post("/ask", json={"question": "q", "session_id": "s"})
+
+    written = capsys.readouterr().err
+    assert "domain error" in written
+    assert "CacheError: boom" in written, "the traceback stays in the log"

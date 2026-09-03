@@ -37,7 +37,14 @@ x-agent-base: &agent-base
     # region. Beijing is https://dashscope.aliyuncs.com/compatible-mode/v1
     # and is substantially cheaper for the same models.
     QWEN_API_URL: ${QWEN_API_URL:-https://dashscope-intl.aliyuncs.com/compatible-mode/v1}
-    QWEN_MODEL: ${QWEN_MODEL:-qwen3-14b}
+    QWEN_MODEL: ${QWEN_MODEL:-qwen-plus}
+    QWEN_MAX_TOKENS: ${QWEN_MAX_TOKENS:-8192}
+    # Unset means "infer from the model name" (qwen3-* gets false).
+    QWEN_ENABLE_THINKING: ${QWEN_ENABLE_THINKING:-}
+    # A JSON object merged into every chat request, for provider-specific
+    # fields this adapter has no opinion about. Malformed JSON fails at
+    # startup rather than inside the first question.
+    QWEN_EXTRA_BODY: ${QWEN_EXTRA_BODY:-}
     QWEN_EMBED_MODEL: ${QWEN_EMBED_MODEL:-text-embedding-v3}
     # Unset means "same endpoint as chat". Set them to run embeddings
     # somewhere else - a second vLLM, or a local server - without touching
@@ -45,6 +52,19 @@ x-agent-base: &agent-base
     EMBED_API_URL: ${EMBED_API_URL:-}
     EMBED_API_KEY: ${EMBED_API_KEY:-}
     DIST_OP: ${DIST_OP:-<=>}
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    # json for a log collector, text for a person reading `docker compose
+    # logs`. Either way every record goes through the redacting formatter.
+    LOG_FORMAT: ${LOG_FORMAT:-text}
+    # How many model calls one turn may make before it must answer with what
+    # it has. Without it a loop runs to LangGraph's recursion limit, paying
+    # for every call on the way.
+    AGENT_MAX_STEPS: ${AGENT_MAX_STEPS:-12}
+    MAX_QUESTION_CHARS: ${MAX_QUESTION_CHARS:-4000}
+    # Whether a 500 names the exception. True here because this compose file
+    # is a development one and the name is the whole diagnosis; false for a
+    # deployment reachable by people who are not operating it.
+    EXPOSE_ERRORS: ${EXPOSE_ERRORS:-true}
   depends_on:
     postgres:
       condition: service_healthy
@@ -91,7 +111,13 @@ services:
       <<: *agent-env
       AGENT_KEY: catalog
     ports:
-      - "8001:8000"
+      # Loopback, not every interface. A sub-agent answers /run with no
+      # authentication - it trusts its caller, and its caller is the
+      # orchestrator on the internal network. Publishing it broadly would put
+      # the delegation layer on the network for anyone who can reach the
+      # host. Still reachable for `curl localhost:8001/health`, which is what
+      # the published port was for.
+      - "127.0.0.1:8001:8000"
 
   agent-circulation:
     <<: *agent-base
@@ -100,7 +126,7 @@ services:
       <<: *agent-env
       AGENT_KEY: circulation
     ports:
-      - "8002:8000"
+      - "127.0.0.1:8002:8000"
 
   # No AGENT_KEY, so this is the orchestrator. It holds one delegate tool per
   # registered sub-agent and no database access of its own beyond history.

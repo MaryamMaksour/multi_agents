@@ -14,6 +14,7 @@ start rather than one that answers wrongly.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from contextlib import asynccontextmanager
 
@@ -30,12 +31,14 @@ from adapters.inbound.http.schemas import (
 from domain.entities.chat_message import Role
 from domain.exceptions import (
     DomainError,
-    GrantMismatchError,
-    RegistryError,
     SessionBusyError,
     UnknownAgentError,
 )
+from libs.agent_core import config
 from libs.agent_core.composition import open_runtime
+from libs.agent_core.logging_setup import configure_logging
+
+logger = logging.getLogger(__name__)
 
 
 def final_answer(result) -> str:
@@ -90,7 +93,21 @@ def create_app(open_runtime_fn=open_runtime) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # Before any resource is opened, so a connection failure is already
+        # reported through the redacting formatter rather than by whatever
+        # default handler logging installs on first use.
+        configure_logging()
         runtime = await open_runtime_fn()
+        logger.info(
+            "runtime ready",
+            extra={
+                "kind": runtime.kind,
+                "agent": runtime.agent.spec.name if runtime.agent else None,
+                "tables": list(runtime.agent.allowed_tables) if runtime.agent else [],
+                "routes_to": list(runtime.routes_to),
+                "model": config.QWEN_MODEL,
+            },
+        )
         app.state.runtime = runtime
         try:
             yield
@@ -117,10 +134,21 @@ def create_app(open_runtime_fn=open_runtime) -> FastAPI:
         Scoped to DomainError, so this is only ever our own exceptions with
         our own wording. An unexpected one still returns a bare 500 rather
         than whatever a library happened to put in its message.
+
+        Whether the exception is named at all is EXPOSE_ERRORS, because a
+        deployment reachable by people who are not operating it should not
+        answer questions about its internals. The log line is the same
+        either way.
         """
-        raise HTTPException(
-            status_code=500, detail=f"{type(exc).__name__}: {exc}"
+        logger.error(
+            "domain error", exc_info=exc, extra={"path": request.url.path},
         )
+        detail = (
+            f"{type(exc).__name__}: {exc}"
+            if config.EXPOSE_ERRORS
+            else "Internal error. See the service logs for this request."
+        )
+        raise HTTPException(status_code=500, detail=detail)
 
     @app.exception_handler(SessionBusyError)
     async def _busy(request: Request, exc: SessionBusyError):
@@ -141,6 +169,7 @@ def create_app(open_runtime_fn=open_runtime) -> FastAPI:
             agent=runtime.agent.spec.name if runtime.agent else None,
             tables=list(runtime.agent.allowed_tables) if runtime.agent else [],
             routes_to=list(runtime.routes_to),
+            model=config.QWEN_MODEL,
         )
 
     @app.post("/run", response_model=TurnResponse)

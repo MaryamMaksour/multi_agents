@@ -245,3 +245,144 @@ def test_real_urls_pass(monkeypatch):
     monkeypatch.setenv("EMBED_API_KEY", "local")
 
     importlib.reload(config_module).validate()
+
+
+# --------------------------------------------------------------------------
+# enable_thinking policy
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("model, setting, expected", [
+    ("qwen3-14b", "", {"enable_thinking": False}),     # hybrid model: must send false
+    ("Qwen3-Coder-480B", "", {"enable_thinking": False}),
+    ("qwen-plus", "", None),                            # not hybrid: nothing sent
+    ("gpt-4.1", "", None),                              # strict endpoint: nothing sent
+    ("gpt-4.1", "false", {"enable_thinking": False}),   # explicit override wins
+    ("qwen3-14b", "true", {"enable_thinking": True}),
+    ("qwen3-14b", "none", None),                        # explicit opt-out
+])
+def test_enable_thinking_is_inferred_from_the_model_unless_forced(model, setting, expected):
+    assert config_module.llm_extra_body(model, setting) == expected
+
+
+def test_enable_thinking_defaults_come_from_the_environment(monkeypatch):
+    for name, value in FULL_ENV.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("QWEN_MODEL", "qwen3-14b")
+    monkeypatch.delenv("QWEN_ENABLE_THINKING", raising=False)
+
+    config = importlib.reload(config_module)
+    assert config.llm_extra_body() == {"enable_thinking": False}
+
+    monkeypatch.setenv("QWEN_MODEL", "gpt-4.1")
+    config = importlib.reload(config_module)
+    assert config.llm_extra_body() is None
+
+
+def test_an_unknown_enable_thinking_value_is_refused_at_startup(monkeypatch):
+    for name, value in FULL_ENV.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("QWEN_ENABLE_THINKING", "flase")
+
+    config = importlib.reload(config_module)
+    with pytest.raises(RuntimeError, match="QWEN_ENABLE_THINKING"):
+        config.validate()
+
+
+@pytest.mark.parametrize("value", ["", "true", "False", "none"])
+def test_documented_enable_thinking_values_pass(monkeypatch, value):
+    for name, value_ in FULL_ENV.items():
+        monkeypatch.setenv(name, value_)
+    monkeypatch.setenv("QWEN_ENABLE_THINKING", value)
+
+    importlib.reload(config_module).validate()
+
+
+# --------------------------------------------------------------------------
+# QWEN_EXTRA_BODY, the provider escape hatch
+# --------------------------------------------------------------------------
+
+
+def test_extra_body_is_merged_into_the_request(config):
+    """A model that wants one extra parameter should not mean editing an
+    adapter and rebuilding an image."""
+    assert config.llm_extra_body(
+        "gpt-4.1", "none", '{"top_k": 20}'
+    ) == {"top_k": 20}
+
+
+def test_extra_body_is_merged_alongside_enable_thinking(config):
+    body = config.llm_extra_body("qwen3-14b", "", '{"top_k": 20}')
+    assert body == {"enable_thinking": False, "top_k": 20}
+
+
+def test_extra_body_wins_over_the_inferred_value(config):
+    """Explicit beats inferred: the escape hatch is what you reach for when
+    the inference is wrong for your provider."""
+    body = config.llm_extra_body("qwen3-14b", "", '{"enable_thinking": true}')
+    assert body == {"enable_thinking": True}
+
+
+def test_an_empty_extra_body_changes_nothing(config):
+    assert config.llm_extra_body("gpt-4.1", "none", "") is None
+    assert config.llm_extra_body("gpt-4.1", "none", "   ") is None
+
+
+@pytest.mark.parametrize("value", ['{"top_k": 20', "[1, 2]", '"a string"', "7"])
+def test_a_malformed_extra_body_is_refused_at_startup(monkeypatch, value):
+    """Next to the variable that caused it, rather than inside the first
+    question."""
+    for name, value_ in FULL_ENV.items():
+        monkeypatch.setenv(name, value_)
+    monkeypatch.setenv("QWEN_EXTRA_BODY", value)
+
+    config = importlib.reload(config_module)
+    with pytest.raises(RuntimeError, match="QWEN_EXTRA_BODY"):
+        config.validate()
+
+
+def test_extra_body_defaults_come_from_the_environment(monkeypatch):
+    for name, value in FULL_ENV.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("QWEN_MODEL", "gpt-4.1")
+    monkeypatch.setenv("QWEN_ENABLE_THINKING", "none")
+    monkeypatch.setenv("QWEN_EXTRA_BODY", '{"top_k": 20}')
+
+    config = importlib.reload(config_module)
+    config.validate()
+    assert config.llm_extra_body() == {"top_k": 20}
+
+
+# --------------------------------------------------------------------------
+# logging and limits
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "name,value,message",
+    [
+        ("LOG_FORMAT", "yaml", "LOG_FORMAT"),
+        ("LOG_LEVEL", "VERBOSE", "LOG_LEVEL"),
+        ("MAX_QUESTION_CHARS", "0", "MAX_QUESTION_CHARS"),
+        ("AGENT_MAX_STEPS", "0", "AGENT_MAX_STEPS"),
+    ],
+)
+def test_a_bad_operational_value_is_refused_at_startup(monkeypatch, name, value, message):
+    for key, value_ in FULL_ENV.items():
+        monkeypatch.setenv(key, value_)
+    monkeypatch.setenv(name, value)
+
+    config = importlib.reload(config_module)
+    with pytest.raises(RuntimeError, match=message):
+        config.validate()
+
+
+@pytest.mark.parametrize("fmt", ["text", "json", "JSON"])
+@pytest.mark.parametrize("level", ["debug", "INFO", "Warning"])
+def test_documented_logging_values_pass(monkeypatch, fmt, level):
+    for key, value in FULL_ENV.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("LOG_FORMAT", fmt)
+    monkeypatch.setenv("LOG_LEVEL", level)
+
+    importlib.reload(config_module).validate()

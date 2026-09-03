@@ -88,7 +88,7 @@ async def test_sql_tools_accept_and_ignore_the_turn_id():
     tool = SqlToolAdapter(
         db=FakeDatabase(), embeddings=FakeEmbeddings(), cache=FakeCache(),
         allowed_tables=["books"], schema={"books": {"columns": "id int4"}},
-        filters={}, lsit_values={}, dist_op="<=>", vector_ttl_seconds=900,
+        filters={}, dist_op="<=>", vector_ttl_seconds=900,
     )
     result = await tool.call_tool("get_table_schema", {"tables": ["books"]}, turn_id="turn-42")
     assert "books" in result

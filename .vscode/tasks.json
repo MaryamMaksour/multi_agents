@@ -1,0 +1,67 @@
+{
+  // Ctrl/Cmd+Shift+P -> "Tasks: Run Task".
+  "version": "2.0.0",
+  "tasks": [
+    {
+      // Postgres (pgvector) on 55432 and Redis on 56379. Everything else
+      // needs these first.
+      "label": "infra: up",
+      "type": "shell",
+      "command": "docker compose -f deploy/docker-compose.dev.yml up -d",
+      "problemMatcher": []
+    },
+    {
+      "label": "infra: down",
+      "type": "shell",
+      "command": "docker compose -f deploy/docker-compose.dev.yml down",
+      "problemMatcher": []
+    },
+    {
+      // Schema, data, roles, history - in that order. Run once, after
+      // "infra: up". Safe to re-run only after `down -v`.
+      "label": "db: seed",
+      "type": "shell",
+      "command": "DB='docker exec -i multi_agents_dev_db psql -v ON_ERROR_STOP=1 -U dev -d library_dev'; eval $DB < seeds/001_schema.sql && python3 seeds/002_generate_data.py | eval $DB && eval $DB < seeds/003_roles.sql && eval $DB < seeds/004_history.sql",
+      "dependsOn": "infra: up",
+      "problemMatcher": []
+    },
+    {
+      "label": "venv: install requirements",
+      "type": "shell",
+      "command": "python3 -m venv .venv && .venv/bin/pip install -r requirements.txt",
+      "problemMatcher": []
+    },
+    {
+      "label": "tests: all",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m pytest",
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      // The integration tests are the ones worth the setup: they check the
+      // information_schema assumption the fakes cannot. They read PGHOST /
+      // PGPORT / PGDATABASE and default to the dev compose ports, so
+      // "infra: up" is the only thing they need.
+      "label": "tests: integration",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m pytest -m integration",
+      "dependsOn": "infra: up",
+      "problemMatcher": []
+    },
+    {
+      // Everything in containers instead - the README's step 3. Reads
+      // deploy/.env by itself.
+      "label": "stack: docker up",
+      "type": "shell",
+      "command": "docker compose -f deploy/docker-compose.yml up --build",
+      "problemMatcher": []
+    },
+    {
+      "label": "stack: docker down",
+      "type": "shell",
+      "command": "docker compose -f deploy/docker-compose.yml down",
+      "problemMatcher": []
+    }
+  ]
+}

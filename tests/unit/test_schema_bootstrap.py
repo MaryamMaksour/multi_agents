@@ -52,10 +52,12 @@ class FakeSchemaPort:
     is exercised without a database that can be made to misbehave.
     """
 
-    def __init__(self, tables=(BOOKS, AUTHORS), counts=None, fails=()):
+    def __init__(self, tables=(BOOKS, AUTHORS), counts=None, fails=(), empty_vectors=()):
         self._tables = {t.name: t for t in tables}
         self._counts = COUNTS if counts is None else counts
         self._fails = set(fails)
+        self._empty_vectors = set(empty_vectors)
+        self.presence_checks: list[tuple[str, str]] = []
         self.probes: list[tuple[str, str]] = []
         self.reads: list[tuple[str, str, int]] = []
         self.described: list[tuple[str, ...]] = []
@@ -78,6 +80,12 @@ class FakeSchemaPort:
         if (table, column) in self._fails:
             raise DatabaseError(f"cannot read {table}.{column}")
         return tuple(f"{column}-{i}" for i in range(min(3, limit)))
+
+    async def has_any_value(self, table: str, column: str) -> bool:
+        self.presence_checks.append((table, column))
+        if (table, column) in self._fails:
+            raise DatabaseError(f"cannot read {table}.{column}")
+        return (table, column) not in self._empty_vectors
 
 
 # --------------------------------------------------------------------------
@@ -241,7 +249,7 @@ def test_not_null_is_shown():
 
 def test_the_rendered_block_parses_back_to_the_column_names():
     """The adapter reads this string back with a regex to validate a column
-    in get_lsit_values. If the two disagree, every column looks unknown."""
+    in get_list_values. If the two disagree, every column looks unknown."""
     from adapters.outbound.tools.sql_tool_adapter import _extract_column_names
 
     parsed = _extract_column_names({"columns": render_columns(BOOKS)})
@@ -258,7 +266,6 @@ async def test_the_loader_output_drives_the_adapter_unchanged():
         allowed_tables=list(loaded.tables),
         schema=loaded.schema,
         filters=loaded.filters,
-        lsit_values={},
         dist_op="<=>",
         vector_ttl_seconds=900,
     )
@@ -344,3 +351,45 @@ async def test_values_are_not_read_when_probing_is_off():
     await load_agent_schema(port, probe_cardinality=False)
 
     assert port.reads == []
+
+
+# --------------------------------------------------------------------------
+# empty vector columns
+# --------------------------------------------------------------------------
+
+
+async def test_a_vector_column_that_holds_nothing_is_not_advertised():
+    """A pgvector index does not index NULL, so a semantic search against an
+    unfilled embedding column matches zero rows, raises nothing, and lets the
+    model report that a table of four hundred rows is empty."""
+    port = FakeSchemaPort(empty_vectors={("books", "embed_summary")})
+
+    result = await load_agent_schema(port)
+
+    assert result.classified["books"]["summary"].kind is not FilterKind.SEMANTIC
+    assert "books.embed_summary" in result.empty_vectors
+
+
+async def test_a_populated_vector_column_is_still_semantic():
+    result = await load_agent_schema(FakeSchemaPort())
+
+    assert result.classified["books"]["summary"].kind is FilterKind.SEMANTIC
+
+
+async def test_every_vector_column_is_probed_once():
+    port = FakeSchemaPort()
+
+    await load_agent_schema(port)
+
+    assert sorted(port.presence_checks) == sorted(set(port.presence_checks))
+    assert ("books", "embed_summary") in port.presence_checks
+
+
+async def test_a_probe_that_fails_leaves_the_column_advertised():
+    """An unreadable column is not evidence of emptiness, and a startup that
+    refused here would be less available than the one before the check."""
+    port = FakeSchemaPort(fails={("books", "embed_summary")})
+
+    result = await load_agent_schema(port)
+
+    assert result.classified["books"]["summary"].kind is FilterKind.SEMANTIC

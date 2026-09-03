@@ -68,3 +68,19 @@ class SchemaPort(Protocol):
             DatabaseError: if the database call fails.
         """
         ...
+
+    async def has_any_value(self, table: str, column: str) -> bool:
+        """Whether a column holds at least one non-NULL value.
+
+        Asked of vector columns at startup. An embedding column that was
+        created and never filled makes every semantic search return zero
+        rows and no error - pgvector does not index NULL - so the model
+        answers "there are none" about a table with 420 rows in it.
+        Confident, wrong, silent. One
+        `SELECT 1 ... WHERE col IS NOT NULL LIMIT 1` per vector column turns
+        that into something the classifier can act on.
+
+        Raises:
+            DatabaseError: if the database call fails.
+        """
+        ...

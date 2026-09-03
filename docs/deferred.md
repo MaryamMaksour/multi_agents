@@ -66,24 +66,6 @@ ordinary text columns and no vectors.
 
 ---
 
-## `get_lsit_values` is misspelled
-
-**The constraint.** It is a dispatch key in `_handlers`, a name in
-`get_tool_schemas`, and a method name. Renaming one without the others turns
-every call into an `UnknownToolError` at runtime rather than a failure at
-startup, so all three move together or none do.
-
-**It has since spread.** The ENUM guidance in `build_guidance` names the tool
-in the sentence the model reads, so the rename is now four places, and there
-are tests in `tests/unit/test_filter_classifier.py` and
-`tests/security/test_untrusted_input.py` asserting the current spelling on
-purpose - a "corrected" name in the guidance alone would send the model to a
-tool that does not exist.
-
-**Comes back when** something else is already touching that adapter.
-
----
-
 ## One sample value in the guidance for TEXT columns
 
 **The idea.** For a high-cardinality text column like `shelf_code` (399
@@ -137,49 +119,6 @@ down with it. It used to - an embedding model the account could not reach
 returned AccessDenied, and because the memory lookup is the first thing a turn
 does, every question failed with a 500 including the ones needing no memory at
 all.
-
----
-
-## `get_table_records` is offered to the model and cannot work
-
-**The problem.** The handler runs:
-
-```sql
-SELECT row_txt FROM {table} ORDER BY embedding <=> $1::vector LIMIT $2
-```
-
-Neither `row_txt` nor `embedding` exists in `seeds/001_schema.sql`, or in any
-schema this design produces - embeddings live in `embed_<column>` columns
-beside the column they describe. It is a survivor from the old codebase, where
-each table had one denormalised text column and one vector for the whole row.
-
-**Half done.** It is no longer declared in `get_tool_schemas`, so the model is
-no longer told about a tool that fails on every call. The handler stays in
-`_handlers`, and `tests/unit/test_tool_schemas.py` now asserts that gap is
-exactly this one tool - withheld on purpose rather than lost.
-
-**What is left:** whether whole-row search is rebuilt against the
-`embed_<column>` convention or dropped. Dropping is the smaller change and
-probably right - `db_execute` already combines a vector distance with ordinary
-predicates in one WHERE clause, which is strictly more useful. Rebuilding is
-only worth it if "show me what rows look like" turns out to be something the
-model actually needs and cannot get from `get_lsit_values` plus a LIMIT.
-
----
-
-## `lsit_values` is a dead constructor parameter
-
-`SqlToolAdapter.__init__` takes it and stores it as `self._lsit_values`, and
-nothing ever reads it.
-
-**Left in place on purpose,** because it is almost certainly the seam for
-"listing a column's values in the filter guidance" above - values read once at
-startup and handed to the adapter rather than fetched per call. Removing it
-now and adding it back later is churn.
-
-**Comes back with** that entry. If that idea is dropped instead, this goes
-with it - and the misspelling carried in the name makes it worth doing
-alongside the rename.
 
 ---
 
