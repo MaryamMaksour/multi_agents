@@ -1,0 +1,16 @@
+{
+  // The interpreter for the whole workspace. Create it once:
+  //   python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+
+  // Test Explorer runs the suite from pytest.ini (testpaths = tests,
+  // asyncio_mode = auto), so no arguments are repeated here.
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false,
+  "python.testing.cwd": "${workspaceFolder}",
+
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/*.pyc": true
+  }
+}
