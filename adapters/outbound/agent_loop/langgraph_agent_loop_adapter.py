@@ -204,10 +204,43 @@ class LangGraphAgentLoopAdapter:
             "turn_id": turn_id,
             "steps": 0,
         }
-        state = await self._graph.ainvoke(initial_state)
+        # Two graph nodes run per model call, so a budget above LangGraph's
+        # own recursion limit would raise there before _should_continue ever
+        # stopped the turn - and the deployment would get a 500 instead of the
+        # partial answer the budget exists to produce.
+        state = await self._graph.ainvoke(
+            initial_state, config={"recursion_limit": 2 * self._max_steps + 2},
+        )
         result_messages = [self._to_chat_message(m) for m in state["messages"][len(messages):]]
 
-        return AgentTurnResult(messages=result_messages, pagination=state["pagination"])
+        return AgentTurnResult(
+            messages=self._settle_unanswered_tool_calls(result_messages),
+            pagination=state["pagination"],
+        )
+
+    @staticmethod
+    def _settle_unanswered_tool_calls(messages: list[ChatMessage]) -> list[ChatMessage]:
+        """Never end a turn on a tool call nobody answered.
+
+        Stopping at the budget ends on the model's own last message, which is
+        a request for tools that were then not run. The orchestrator persists
+        the turn, so the next question would replay a tool call with no result
+        after it - a conversation an OpenAI-compatible provider rejects.
+        """
+        if not messages:
+            return messages
+
+        last = messages[-1]
+        if last.role is not Role.ASSISTANT or not last.tool_calls:
+            return messages
+
+        return messages[:-1] + [ChatMessage(
+            role=Role.ASSISTANT,
+            content=last.content or (
+                "I stopped before finishing this question: the turn reached its "
+                "step budget. Please ask again, more narrowly."
+            ),
+        )]
 
 
 
