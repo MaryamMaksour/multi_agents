@@ -70,6 +70,9 @@ class SchemaPortStub:
     async def distinct_values(self, table, column, limit):
         return ("one", "two", "three")[:limit]
 
+    async def has_any_value(self, table, column):
+        return True
+
 
 async def ready(**overrides) -> ReadyAgent:
     return ReadyAgent(

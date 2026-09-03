@@ -16,6 +16,14 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
+from libs.agent_core import config
+
+# One question is an embedding call plus several model calls priced per
+# token, so the length of the text is a cost limit as much as a sanity
+# check. Rejected here, by the schema, rather than after the first model
+# call: a 422 costs nothing.
+MAX_QUESTION_CHARS = config.MAX_QUESTION_CHARS
+
 
 class DelegateContext(BaseModel):
     """The correlation values the caller carries, not the model's choices.
@@ -26,8 +34,8 @@ class DelegateContext(BaseModel):
     trace readable after the fact.
     """
 
-    cursor: Optional[str] = None
-    turn_id: Optional[str] = None
+    cursor: Optional[str] = Field(default=None, max_length=100_000)
+    turn_id: Optional[str] = Field(default=None, max_length=200)
 
 
 class RunRequest(BaseModel):
@@ -36,16 +44,16 @@ class RunRequest(BaseModel):
     Mirrors HttpDelegateToolAdapter.call_tool exactly.
     """
 
-    session_id: str = ""
-    user_input: str = Field(min_length=1)
+    session_id: str = Field(default="", max_length=200)
+    user_input: str = Field(min_length=1, max_length=MAX_QUESTION_CHARS)
     context: DelegateContext = Field(default_factory=DelegateContext)
 
 
 class AskRequest(BaseModel):
     """What a person (or the console) posts to the orchestrator."""
 
-    question: str = Field(min_length=1)
-    session_id: str = Field(min_length=1)
+    question: str = Field(min_length=1, max_length=MAX_QUESTION_CHARS)
+    session_id: str = Field(min_length=1, max_length=200)
 
 
 class DelegatedQuestion(BaseModel):
@@ -101,3 +109,7 @@ class HealthResponse(BaseModel):
     agent: Optional[str] = None
     tables: list[str] = Field(default_factory=list)
     routes_to: list[str] = Field(default_factory=list)
+
+    # Which model is answering. A process running a different model than the
+    # deployment believes is a quality difference with no other symptom.
+    model: str = ""

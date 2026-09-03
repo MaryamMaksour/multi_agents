@@ -45,7 +45,12 @@ DATETIME_TYPES: frozenset[str] = frozenset({
 })
 
 
-def classify_column(table, column, distinct_count: int | None) -> FilterKind:
+def classify_column(
+    table,
+    column,
+    distinct_count: int | None,
+    unpopulated_vectors: frozenset[str] | set[str] | None = None,
+) -> FilterKind:
     """Decide one column's FilterKind.
 
     Precedence, and the order matters:
@@ -64,16 +69,27 @@ def classify_column(table, column, distinct_count: int | None) -> FilterKind:
     not None but is treated the same way: an empty column has no short list
     for the model to choose from.
 
+    `unpopulated_vectors` names the embedding columns that hold nothing. A
+    partner column full of NULLs is not a semantic search, it is a query
+    that matches zero rows and says so with no error - pgvector does not
+    index NULL, and the model reports "there are none" about a table with
+    420 rows in it. So a column whose partner is empty is classified as if
+    the partner did not exist, and the guidance stops advertising a search
+    that cannot work.
+
     Note what is NOT here: the old code had two unconditional overrides, one
     for name/shortname and one for address/location, that fired regardless of
     which list the column came from. Those encoded one deployment's column
     names into shared logic. Their legitimate purpose - "search these two
     columns together" - belongs in per-deployment annotation, not here.
     """
+    unpopulated_vectors = unpopulated_vectors or frozenset()
+    partner = table.embedding_partner(column.name)
+
     if column.is_vector:
         return FilterKind.VECTOR_STORAGE
 
-    elif table.embedding_partner(column.name) is not None:
+    elif partner is not None and partner.name not in unpopulated_vectors:
         return FilterKind.SEMANTIC
 
     elif column.sql_type in NUMERIC_TYPES:
@@ -94,6 +110,7 @@ def classify_table(
     distinct_counts: dict[str, int] | None = None,
     dist_op: str = DEFAULT_DIST_OP,
     enum_values: dict[str, tuple[str, ...]] | None = None,
+    unpopulated_vectors: frozenset[str] | set[str] | None = None,
 ) -> dict[str, ColumnFilter]:
     """Classify every column in a TableSchema.
 
@@ -128,7 +145,9 @@ def classify_table(
     table_filter: dict[str, ColumnFilter] = {}
 
     for column in table.columns:
-        kind = classify_column(table, column, distinct_counts.get(column.name))
+        kind = classify_column(
+            table, column, distinct_counts.get(column.name), unpopulated_vectors
+        )
         guidance = build_guidance(
             table, column, kind, dist_op, enum_values.get(column.name)
         )
@@ -156,6 +175,7 @@ def build_guidance(table, column, kind, dist_op: str = DEFAULT_DIST_OP,
             f"Storage for {source}'s embedding, not something to filter on "
             f"directly. Filter on {source} and this column is used for you."
         )
+
 
     if kind is FilterKind.SEMANTIC:
         partner = table.embedding_partner(column.name)
@@ -218,10 +238,10 @@ def build_guidance(table, column, kind, dist_op: str = DEFAULT_DIST_OP,
 
     if kind is FilterKind.TEXT:
         return (
-            f"Free text with many distinct values. Match with = for a whole "
-            f"value or ILIKE '%...%' for a fragment. Do not call "
-            f"get_list_values on it - there are too many values for the list to "
-            f"be useful."
+            "Free text with many distinct values. Match with = for a whole "
+            "value or ILIKE '%...%' for a fragment. Do not call "
+            "get_list_values on it - there are too many values for the list to "
+            "be useful."
         )
 
     raise ValueError(f"No guidance defined for {kind}")

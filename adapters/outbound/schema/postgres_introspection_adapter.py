@@ -209,3 +209,22 @@ class PostgresIntrospectionAdapter:
             int(limit),
         )
         return tuple(str(row["v"]) for row in rows)
+
+    async def has_any_value(self, table: str, column: str) -> bool:
+        """Whether one non-NULL value exists in the column.
+
+        `LIMIT 1` rather than a count: the question is existence, and on a
+        vector column a count would read every embedding in the table to
+        answer something the first row settles.
+        """
+        try:
+            table_id = validate_identifier(table)
+            column_id = validate_identifier(column)
+        except ValueError as e:
+            raise DatabaseError(f"Refusing to introspect: {e}") from e
+
+        rows = await self._db.fetch(
+            f'SELECT 1 AS present FROM "{self._schema}"."{table_id}" '
+            f'WHERE "{column_id}" IS NOT NULL LIMIT 1'
+        )
+        return bool(rows)
