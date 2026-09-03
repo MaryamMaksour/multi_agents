@@ -128,3 +128,60 @@ async def test_the_model_reply_is_logged_with_the_tools_it_asked_for(caplog):
     answered = [r for r in caplog.records if r.message == "model answered"]
     assert [r.tool_calls for r in answered] == [["db_execute"], []]
     assert all(r.turn_id == "t-42" for r in answered)
+
+
+@pytest.mark.asyncio
+async def test_a_turn_stopped_at_the_budget_leaves_no_unanswered_tool_call():
+    """The orchestrator persists the turn. A trailing tool call with no
+    result after it is a conversation an OpenAI-compatible provider rejects
+    on the next question, so the budget must not create one."""
+    llm = AlwaysCallsATool()
+
+    result = await loop(llm, max_steps=2).run([ChatMessage(role=Role.USER, content="hi")])
+
+    last = result.messages[-1]
+    assert not last.tool_calls
+    assert last.content, "the caller gets words, not an empty assistant message"
+
+
+@pytest.mark.asyncio
+async def test_a_normal_final_answer_is_left_alone():
+    llm = FakeLLM([ChatMessage(role=Role.ASSISTANT, content="twelve")])
+
+    result = await loop(llm, max_steps=4).run([ChatMessage(role=Role.USER, content="how many?")])
+
+    assert result.messages[-1].content == "twelve"
+
+
+@pytest.mark.asyncio
+async def test_a_budget_above_langgraphs_recursion_limit_still_answers():
+    """LangGraph's default limit is 25 and a tool-using turn spends two nodes
+    per model call, so an accepted budget of 40 would raise there before the
+    loop ever stopped itself - a 500 instead of the partial answer."""
+    llm = AlwaysCallsATool()
+
+    result = await loop(llm, max_steps=40).run([ChatMessage(role=Role.USER, content="hi")])
+
+    assert len(llm.received) == 40
+    assert result.messages
+
+
+@pytest.mark.asyncio
+async def test_a_preamble_is_kept_but_never_left_standing_as_the_answer():
+    """"Let me check the loans table" is what a model says while asking for a
+    tool. Returned alone it reads as a finished answer that did nothing."""
+
+    class Preamble(FakeLLM):
+        async def achat(self, messages):
+            self.received.append(list(messages))
+            return ChatMessage(
+                role=Role.ASSISTANT,
+                content="Let me check the loans table.",
+                tool_calls=[ToolCall(id="c1", name="db_execute", args={"sql": "SELECT 1"})],
+            )
+
+    result = await loop(Preamble(), max_steps=1).run([ChatMessage(role=Role.USER, content="hi")])
+
+    content = result.messages[-1].content
+    assert "Let me check the loans table." in content
+    assert "step budget" in content

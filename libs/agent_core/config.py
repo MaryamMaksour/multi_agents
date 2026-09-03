@@ -152,10 +152,11 @@ def logging_level(name: str) -> int | str:
     return logging.getLevelName(name.upper())
 
 
-# Whether a 500 names the exception type and message in its body. On for a
-# development stack, where the alternative is `docker compose logs` for every
-# failure; off where the caller is not the operator.
-EXPOSE_ERRORS = os.getenv("EXPOSE_ERRORS", "true").lower() == "true"
+# Whether a 500 names the exception type and message in its body. Off unless
+# asked for: the unconfigured deployment is the one most likely to be facing
+# someone who is not the operator. Worth turning on for a development stack,
+# where the alternative is `docker compose logs` for every failure.
+EXPOSE_ERRORS = os.getenv("EXPOSE_ERRORS", "false").lower() == "true"
 
 # --- Limits ---------------------------------------------------------------
 # The longest question or delegated query accepted, in characters. A question
