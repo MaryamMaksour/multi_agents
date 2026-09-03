@@ -164,3 +164,24 @@ async def test_a_budget_above_langgraphs_recursion_limit_still_answers():
 
     assert len(llm.received) == 40
     assert result.messages
+
+
+@pytest.mark.asyncio
+async def test_a_preamble_is_kept_but_never_left_standing_as_the_answer():
+    """"Let me check the loans table" is what a model says while asking for a
+    tool. Returned alone it reads as a finished answer that did nothing."""
+
+    class Preamble(FakeLLM):
+        async def achat(self, messages):
+            self.received.append(list(messages))
+            return ChatMessage(
+                role=Role.ASSISTANT,
+                content="Let me check the loans table.",
+                tool_calls=[ToolCall(id="c1", name="db_execute", args={"sql": "SELECT 1"})],
+            )
+
+    result = await loop(Preamble(), max_steps=1).run([ChatMessage(role=Role.USER, content="hi")])
+
+    content = result.messages[-1].content
+    assert "Let me check the loans table." in content
+    assert "step budget" in content

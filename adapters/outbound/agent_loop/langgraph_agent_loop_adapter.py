@@ -236,9 +236,13 @@ class LangGraphAgentLoopAdapter:
 
         return messages[:-1] + [ChatMessage(
             role=Role.ASSISTANT,
-            content=last.content or (
-                "I stopped before finishing this question: the turn reached its "
-                "step budget. Please ask again, more narrowly."
+            content=(
+                # Whatever the model said alongside the tool call is a
+                # preamble ("let me check the loans table"), not an answer, so
+                # it is kept but never left standing on its own.
+                (f"{last.content}\n\n" if last.content else "")
+                + "I stopped before finishing this question: the turn reached "
+                "its step budget. Please ask again, more narrowly."
             ),
         )]
 

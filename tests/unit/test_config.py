@@ -386,3 +386,22 @@ def test_documented_logging_values_pass(monkeypatch, fmt, level):
     monkeypatch.setenv("LOG_LEVEL", level)
 
     importlib.reload(config_module).validate()
+
+
+def test_a_500_does_not_name_the_exception_unless_asked(monkeypatch):
+    """The unconfigured deployment is the one most likely to be facing someone
+    who is not operating it."""
+    for key, value in FULL_ENV.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.delenv("EXPOSE_ERRORS", raising=False)
+
+    assert importlib.reload(config_module).EXPOSE_ERRORS is False
+
+
+@pytest.mark.parametrize("value,expected", [("true", True), ("false", False), ("TRUE", True)])
+def test_naming_the_exception_is_opt_in_from_the_environment(monkeypatch, value, expected):
+    for key, env_value in FULL_ENV.items():
+        monkeypatch.setenv(key, env_value)
+    monkeypatch.setenv("EXPOSE_ERRORS", value)
+
+    assert importlib.reload(config_module).EXPOSE_ERRORS is expected
